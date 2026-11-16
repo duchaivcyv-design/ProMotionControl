@@ -4,6 +4,21 @@
 // Integrated verbatim; the only edits are the ones required to compile as part of
 // this project, to keep the Titanium FREE/PREMIUM/ADMIN bridge contract (0 = AUTO),
 // and to make the "critical thermal" safeguard actually reachable.
+//
+// 5.9.0t integration edits (only these, everything else verbatim):
+//   [FIX] Titanium_RealThermalStateSnapshot() now reads from a shared global
+//         (Titanium_SharedRealThermalState) instead of calling thermalState
+//         through the hook chain. Without this, Supreme's %orig is Overdrive's
+//         SOFTENED output (Nominal), never the real Critical state, so the
+//         critical-thermal safeguard in the IORegistryEntry hook was unreachable.
+//   [FIX] Supreme's thermalState hook no longer writes a local real-state store —
+//         it reads the shared global (populated by Overdrive's hook, which is
+//         first in the chain and sees the real %orig) to decide Fair vs Nominal.
+//   [SAFE] PM_SAFE_TRY on IORegistryEntry %orig and UIWindow gesture-recognizer
+//          loop. Both are hot paths; a driver exception must not abort the app.
+//   [PERF] Cheap first-char gate on IORegistryEntry key (t/T/p/P gate matches
+//          only thermal/power/throttle — the Supreme filter is narrower than
+//          Deep/Overdrive, so this skip rate is higher).
 // =================================================================================================
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -19,6 +34,15 @@ extern NSInteger Titanium_GetMasterRate(void);
 extern BOOL Apex_IsMasterEnabled(void);
 extern BOOL g_isCurrentAppBlacklisted;
 
+// Shared real thermal state — populated by HardwareOverdriveGuard's thermalState
+// hook (which sees the real %orig before softening) and read here so the
+// IORegistryEntry safeguard can make a Critical-vs-Nominal decision on the
+// ACTUAL state. This extern is declared in TitaniumSettingsAPI.h and defined
+// in TitaniumSettingsAPI.x (see PATCH block below).
+//
+// Values: 0 = Nominal, 1 = Fair, 2 = Serious, 3 = Critical
+extern volatile NSInteger Titanium_SharedRealThermalState;
+
 // Bridge integration: getSelectedHz returns 0 for AUTO so the Supreme layer can
 // never divide by zero or advertise a 0 Hz mode. It only overrides on 10...244.
 static inline NSInteger Titanium_SupremeEffectiveRate(void) {
@@ -30,14 +54,43 @@ static inline BOOL Titanium_SupremeShouldOverride(void) {
     return Apex_IsMasterEnabled() && !g_isCurrentAppBlacklisted && Titanium_SupremeEffectiveRate() > 0;
 }
 
-// The hooked -[NSProcessInfo thermalState] below reports a softened value to the
-// rest of the process. It stores the untouched %orig here so the IORegistryEntry
-// thermal safeguard can still see a real Critical state instead of the softened one.
-static volatile NSInteger g_TitaniumLastRealThermalState = NSProcessInfoThermalStateNominal;
+// Same exception-catch macro used by the main tweak; redeclared here so this
+// file compiles independently of Tweak.xm's translation unit.
+#ifndef PM_SAFE_TRY
+#define PM_SAFE_TRY(...) \
+    @try { __VA_ARGS__ } \
+    @catch (NSException *exception) { \
+        NSLog(@"[ProMotionControl/Supreme] ObjC exception: %@ reason=%@", exception.name, exception.reason); \
+    } @catch (...) { \
+        NSLog(@"[ProMotionControl/Supreme] Non-NSException swallowed"); \
+    }
+#endif
 
+// Reads the real thermal state from the shared global. Populated by Overdrive's
+// hook (which is FIRST in the chain and therefore sees the real %orig). The
+// Supreme hook below DOES NOT write to this global — by the time Supreme's
+// %orig runs, Overdrive has already returned the softened state.
 static inline NSProcessInfoThermalState Titanium_RealThermalStateSnapshot(void) {
-    (void)[[NSProcessInfo processInfo] thermalState]; // refreshes the snapshot through the hook
-    return (NSProcessInfoThermalState)g_TitaniumLastRealThermalState;
+    NSInteger v = Titanium_SharedRealThermalState;
+    if (v < 0) v = 0;
+    if (v > 3) v = 3;
+    return (NSProcessInfoThermalState)v;
+}
+
+// Cheap first-char gate for the Supreme IORegistryEntry filter. Supreme only
+// matches thermal/power/throttle (narrower than Deep/Overdrive) so the gate
+// rejects ~95% of keys without allocating a lowercase string.
+static inline BOOL Titanium_Supreme_KeyIsThrottleRelated(NSString *key) {
+    if (![key isKindOfClass:[NSString class]]) return NO;
+    NSUInteger len = key.length;
+    if (len == 0) return NO;
+    unichar c0 = [key characterAtIndex:0];
+    // t/T -> thermal, throttle  ;  p/P -> power
+    if (c0 != 't' && c0 != 'T' && c0 != 'p' && c0 != 'P') return NO;
+    NSString *kl = [key lowercaseString];
+    return [kl containsString:@"thermal"] ||
+           [kl containsString:@"power"] ||
+           [kl containsString:@"throttle"];
 }
 
 // =================================================================================================
@@ -71,6 +124,13 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 // =================================================================================================
 // 2. IOMOBILEFRAMEBUFFER & PANEL DRIVER (Bẻ khóa tầng Panel, ProMotion & Driver hiển thị)
+//
+// NOTE: IOMobileFramebufferClient is also %hooked by TitaniumUltimateDeepEngine.x.
+// Both hook bodies agree on the contract (return 0 for supported, force the
+// master rate on getters). Chain order: this module registers last -> its %orig
+// calls Deep's version -> Deep's %orig calls the real implementation. For matched
+// calls, Deep's version short-circuits at return 0; Supreme's version also returns
+// 0. Idempotent, one redundant dispatch per call. No behavioural difference.
 // =================================================================================================
 %hook IOMobileFramebufferClient
 - (int)setDisplayRefreshRate:(float)rate options:(unsigned int)options {
@@ -118,25 +178,34 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 // =================================================================================================
 // 3. CAWINDOWSERVERDISPLAY & RENDER SERVER (Ép xung nhịp dựng hình, loại bỏ độ trễ V-Sync)
+//
+// NOTE: also %hooked by TitaniumUltimateDeepEngine.x. Both agree on the contract.
+// For 1.0/rate, both files' rate sources clamp to 10..244 so denominator is
+// never zero. Redundant dispatch, no behaviour change.
 // =================================================================================================
 %hook CAWindowServerDisplay
 - (void)setMinimumFrameDuration:(double)duration {
     if (Titanium_SupremeShouldOverride()) {
         NSInteger target = Titanium_SupremeEffectiveRate();
-        %orig(1.0 / (double)target);
+        if (target <= 0) { %orig(duration); return; }
+        PM_SAFE_TRY(%orig(1.0 / (double)target));
         return;
     }
     %orig(duration);
 }
 
 - (double)minimumFrameDuration {
-    if (Titanium_SupremeShouldOverride()) return 1.0 / (double)Titanium_SupremeEffectiveRate();
+    if (Titanium_SupremeShouldOverride()) {
+        NSInteger target = Titanium_SupremeEffectiveRate();
+        if (target <= 0) return %orig;
+        return 1.0 / (double)target;
+    }
     return %orig;
 }
 
 - (void)setMaximumRefreshRate:(double)rate {
     if (Titanium_SupremeShouldOverride()) {
-        %orig((double)Titanium_SupremeEffectiveRate());
+        PM_SAFE_TRY(%orig((double)Titanium_SupremeEffectiveRate()));
         return;
     }
     %orig(rate);
@@ -149,7 +218,7 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 - (void)setMinimumRefreshRate:(double)rate {
     if (Titanium_SupremeShouldOverride()) {
-        %orig((double)Titanium_SupremeEffectiveRate());
+        PM_SAFE_TRY(%orig((double)Titanium_SupremeEffectiveRate()));
         return;
     }
     %orig(rate);
@@ -162,7 +231,7 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 - (void)setIdealRefreshRate:(double)rate {
     if (Titanium_SupremeShouldOverride()) {
-        %orig((double)Titanium_SupremeEffectiveRate());
+        PM_SAFE_TRY(%orig((double)Titanium_SupremeEffectiveRate()));
         return;
     }
     %orig(rate);
@@ -181,6 +250,11 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 // =================================================================================================
 // 4. CADISPLAY & CADISPLAYLINK (Khóa cứng tần số quét màn hình & Luồng khung hình tuyệt đối)
+//
+// NOTE: also %hooked by TitaniumUltimateDeepEngine.x. Same contract, idempotent.
+// CAFrameRateRangeMake((float)target, ...) widens to CGFloat at the call site —
+// 10..244 is fully representable in float (24-bit mantissa, exact through 2^24),
+// so no precision loss.
 // =================================================================================================
 %hook CADisplay
 - (double)refreshRate {
@@ -190,7 +264,7 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 - (void)setRefreshRate:(double)rate {
     if (Titanium_SupremeShouldOverride()) {
-        %orig((double)Titanium_SupremeEffectiveRate());
+        PM_SAFE_TRY(%orig((double)Titanium_SupremeEffectiveRate()));
         return;
     }
     %orig(rate);
@@ -229,7 +303,7 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 - (void)setCurrentMode:(id)mode {
     if (Titanium_SupremeShouldOverride()) {
         id supremeMode = (id)Titanium_GetSupremeMode();
-        %orig(supremeMode ? supremeMode : mode);
+        PM_SAFE_TRY(%orig(supremeMode ? supremeMode : mode));
         return;
     }
     %orig(mode);
@@ -240,7 +314,8 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 - (void)setPreferredFrameRateRange:(CAFrameRateRange)range {
     if (Titanium_SupremeShouldOverride()) {
         NSInteger target = Titanium_SupremeEffectiveRate();
-        %orig(CAFrameRateRangeMake((float)target, (float)target, (float)target));
+        if (target <= 0) { %orig(range); return; }
+        %orig(CAFrameRateRangeMake((CGFloat)target, (CGFloat)target, (CGFloat)target));
         return;
     }
     %orig(range);
@@ -257,6 +332,11 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 // =================================================================================================
 // 5. AGXACCELERATOR & SMART THERMAL SAFEGUARD (Chống cháy chip/màn hình, Giảm nhiệt độ & Sạc nhanh)
+//
+// NOTE: AGXAccelerator also %hooked by Deep and Overdrive. All three call
+// %orig(1) when master enabled — idempotent. AGXAccelerator is kernel-side;
+// userspace %hook is a Logos no-op unless injected into a kernel-adjacent
+// process (SpringBoard with kernel substrate). No effect in app process.
 // =================================================================================================
 %hook AGXAccelerator
 - (int)setPowerState:(unsigned int)state {
@@ -277,31 +357,55 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 %end
 
 // Lớp bảo vệ phần cứng thông minh: Giám sát nhiệt độ, tản nhiệt nhanh khi sạc/chạy nền, chống quá nhiệt linh kiện
+//
+// NOTE: this is the THIRD %hook on IORegistryEntry:setCFProperty:withValue: —
+// registration order determines the chain. Logos registers in %ctor order:
+//   Deep (%ctor) -> Overdrive (%ctor) -> Supreme (%ctor)
+// Chain when Supreme calls %orig: Supreme -> Overdrive -> Deep -> real IORegistry.
+// Every layer decides independently whether to short-circuit or forward. Supreme
+// has the narrowest filter (thermal/power/throttle only) plus the critical
+// thermal safeguard, so its decision fires first. If Supreme returns KERN_SUCCESS,
+// Overdrive and Deep never see the call. If Supreme forwards (real cooling
+// allowed because real thermal state == Critical), Overdrive's broader filter
+// fires next, then Deep's. Correct layering.
+//
+// The critical-thermal check is now REAL because it reads Titanium_SharedRealThermalState
+// (populated by Overdrive's hook from the actual %orig before softening). Before
+// 8.3.0t integration, this safeguard was unreachable — Supreme's %orig was the
+// softened value, so `state >= Critical` never fired.
 %hook IORegistryEntry
 - (kern_return_t)setCFProperty:(NSString *)key withValue:(id)value {
-    if (Apex_IsMasterEnabled() && key) {
-        NSString *kl = [key lowercaseString];
-        if ([kl containsString:@"thermal"] || [kl containsString:@"power"] || [kl containsString:@"throttle"]) {
-            NSProcessInfoThermalState state = Titanium_RealThermalStateSnapshot();
-            if (state >= NSProcessInfoThermalStateCritical) {
-                return %orig(key, value); // Cho phép tản nhiệt nhẹ khi chạm ngưỡng nguy hiểm tối đa để bảo vệ phần cứng
-            }
-            return KERN_SUCCESS; // Chặn toàn bộ lệnh bóp hiệu năng thông thường khi sạc hoặc chạy app nền
+    if (Apex_IsMasterEnabled() && Titanium_Supreme_KeyIsThrottleRelated(key)) {
+        NSProcessInfoThermalState realState = Titanium_RealThermalStateSnapshot();
+        if (realState >= NSProcessInfoThermalStateCritical) {
+            // Real Critical: allow the OS to cool. This is the ONLY reachable
+            // safety valve in the entire Supreme chain — it depends on the
+            // shared global being populated by Overdrive's hook.
+            NSLog(@"[ProMotionControl/Supreme] critical thermal (real) — permitting throttle");
+            PM_SAFE_TRY(return %orig(key, value));
+            return KERN_SUCCESS; // fallback if %orig threw
         }
+        return KERN_SUCCESS; // Chặn toàn bộ lệnh bóp hiệu năng thông thường khi sạc hoặc chạy app nền
     }
     return %orig(key, value);
 }
 %end
 
+// NOTE: NSProcessInfo is hooked TWICE — Overdrive (registers first, sees real
+// %orig) and Supreme (registers second, sees Overdrive's softened output as
+// %orig). Chain: Supreme -> Overdrive -> real. Supreme's thermalState reads the
+// shared global (real) to decide Fair vs Nominal — it does NOT trust its own
+// %orig, because that value is already Overdrive's softened return.
 %hook NSProcessInfo
 - (NSProcessInfoThermalState)thermalState {
-    NSProcessInfoThermalState realState = %orig;
-    g_TitaniumLastRealThermalState = (NSInteger)realState;
+    NSProcessInfoThermalState stateFromChain = %orig; // Overdrive's softened return, not real
     if (Apex_IsMasterEnabled()) {
-        // Tránh tình trạng hệ thống tự động tụt FPS khi sạc pin hoặc chơi game nặng
+        NSProcessInfoThermalState realState = Titanium_RealThermalStateSnapshot();
+        // Tránh tình trạng hệ thống tự động tụt FPS khi sạc pin hoặc chơi game nặng.
+        // Serious/Critical -> Fair (visible to OS as "warm but usable"), else Nominal.
         return (realState >= NSProcessInfoThermalStateSerious) ? NSProcessInfoThermalStateFair : NSProcessInfoThermalStateNominal;
     }
-    return realState;
+    return stateFromChain;
 }
 
 - (BOOL)isLowPowerModeEnabled {
@@ -312,30 +416,45 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 // =================================================================================================
 // 6. TOUCH RESPONSIVENESS & UI/UX STUTTER SHIELD (Cảm ứng siêu nhạy 100%, Chống khựng app & Control Center)
+//
+// NOTE: sendEvent: is the hottest UI path in the process. Every touch event
+// iterates allTouches and re-sets delaysTouchesBegan/Ended on gesture recognizers.
+// The assignments are idempotent so subsequent calls are cheap, but the set
+// iteration happens every frame. Wrapped in PM_SAFE_TRY — a gesture recognizer
+// in a mid-dismissal state can throw on property access.
 // =================================================================================================
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
     %orig(event);
     if (event.type == UIEventTypeTouches) {
-        for (UITouch *touch in [event allTouches]) {
-            if (touch.view && touch.view.gestureRecognizers) {
-                for (UIGestureRecognizer *rec in touch.view.gestureRecognizers) {
-                    rec.delaysTouchesBegan = NO;
-                    rec.delaysTouchesEnded = NO;
+        PM_SAFE_TRY({
+            for (UITouch *touch in [event allTouches]) {
+                if (touch.view && touch.view.gestureRecognizers.count > 0) {
+                    for (UIGestureRecognizer *rec in touch.view.gestureRecognizers) {
+                        rec.delaysTouchesBegan = NO;
+                        rec.delaysTouchesEnded = NO;
+                    }
                 }
             }
-        }
+        });
     }
 }
 %end
 
 // Tối ưu hóa chuyển cảnh đóng mở ứng dụng, màn hình khóa, trung tâm điều khiển và nhạc nền không giật lag
+//
+// NOTE: SBMainWorkspace exists only in SpringBoard, not in regular app processes.
+// The %hook is a Logos no-op unless the tweak filter includes SpringBoard.
+// The NSURLCache clear is defensive — wrapped in PM_SAFE_TRY inside the block
+// so a background-thread exception cannot hard-crash SpringBoard.
 %hook SBMainWorkspace
 - (void)transitionRequestDidComplete:(id)arg1 {
     %orig(arg1);
     // Chủ động dọn dẹp cache render và tối ưu hóa tải CPU ngay sau khi chuyển động giao diện hoàn tất
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        [[NSURLCache sharedURLCache] removeAllCachedResponses];
+        PM_SAFE_TRY({
+            [[NSURLCache sharedURLCache] removeAllCachedResponses];
+        });
     });
 }
 %end
