@@ -1,8 +1,9 @@
 // ============================================================================
 // ProMotionControl — Tweak runtime (iOS 15+)
-// Build: 5.9.0t — GETTER SPOOF, [10, 240, target] all paths
+// Build: 8.0.1t — GETTER SPOOF, [10, 240, target] all paths + Profile plist
 // Getter hooks: preferredFramesPerSecond + preferredFrameRateRange return the
-// chosen target verbatim. Floor is 10, ceiling 240, everywhere.
+// chosen target verbatim. Floor is 10, ceiling 240, everywhere. Profile plist
+// (com.dell.promotioncontrol.profile.plist) drives defaults when present.
 // ============================================================================
 #include <substrate.h>
 #import <Foundation/Foundation.h>
@@ -178,7 +179,7 @@ const char *PMControlTweakInstallationID(void) {
 
 __attribute__((visibility("default"), used))
 const char *PMControlTweakBuildVersion(void) {
-    static const char *version = "8.0.0t";
+    static const char *version = "8.0.1t";
     return version;
 }
 
@@ -188,10 +189,13 @@ int PMControlTweakUnlockLevel(void) {
     return (int)Titanium_UnlockLevel();
 }
 
-#define PM_BUILD_VERSION @"8.0.0t"
+#define PM_BUILD_VERSION @"8.0.1t"
 #define PM_PREFS_PATH @"/var/mobile/Library/Preferences/com.dell.promotioncontrol.plist"
 #define PM_LEGACY_PREFS_PATH @"/var/mobile/Library/Preferences/com.promotioncontrol.prefs.plist"
 #define PM_SUPPLEMENTAL_PREFS_PATH @"/var/mobile/Library/Preferences/com.dell.promotioncontrol.supplemental.plist"
+// NEW 8.0.1t: profile plist — high-priority defaults the user drops as a ticket.
+// Precedence: legacy < supplemental < canonical-flat < profile < ServerProfiles < AppProfiles
+#define PM_PROFILE_PLIST_PATH @"/var/mobile/Library/Preferences/com.dell.promotioncontrol.profile.plist"
 #define PM_DARWIN_CHANGED_NOTIFICATION CFSTR("com.dell.promotioncontrol.changed")
 #define PM_DARWIN_THERMAL_NOTIFICATION CFSTR("com.dell.promotioncontrol.thermal-state")
 
@@ -291,6 +295,7 @@ typedef struct PMMetrics {
     atomic_uint_fast64_t panelOverrideAttempts;
     atomic_uint_fast64_t panelOverrideFailures;
     atomic_uint_fast64_t spoofGetterHits;
+    atomic_uint_fast64_t profilePlistLoads;   // 8.0.1t
 } PMMetrics;
 static PMMetrics g_PMMetrics = {0};
 #define PM_METRIC_BUMP(field) \
@@ -333,6 +338,7 @@ uint64_t PMControlTweakMetric(const char *name) {
     if ([key isEqualToString:@"panelOverrideAttempts"]) return atomic_load_explicit(&g_PMMetrics.panelOverrideAttempts, memory_order_acquire);
     if ([key isEqualToString:@"panelOverrideFailures"]) return atomic_load_explicit(&g_PMMetrics.panelOverrideFailures, memory_order_acquire);
     if ([key isEqualToString:@"spoofGetterHits"]) return atomic_load_explicit(&g_PMMetrics.spoofGetterHits, memory_order_acquire);
+    if ([key isEqualToString:@"profilePlistLoads"]) return atomic_load_explicit(&g_PMMetrics.profilePlistLoads, memory_order_acquire);
     return 0;
 }
 
@@ -442,6 +448,151 @@ static NSDictionary *PMPreferencesForSelectedServer(NSDictionary *rootPreference
     [resolved addEntriesFromDictionary:selected];
     resolved[@"ActiveServerMode"] = @(mode);
     return [resolved copy];
+}
+
+// ============================================================================
+// 8.0.1t: PROFILE PLIST PARSER — turns Ultra/High/Balanced/Battery + flat keys
+// into a dict that merges like any other pref source (wins over canonical flat,
+// loses to ServerProfiles selected tier + per-app AppProfiles overrides).
+// ============================================================================
+
+// Maps profile name to its default policy deltas. Unknown names → empty dict
+// so the caller can still read FPS/RefreshRate/GameMode from the plist body.
+static NSDictionary *PMProfilePolicyOverrides(NSString *profile) {
+    if (![profile isKindOfClass:[NSString class]] || profile.length == 0) return @{};
+    NSString *p = [profile lowercaseString];
+    if ([p isEqualToString:@"ultra"]) {
+        return @{
+            @"ExactRateEnforcement": @YES,
+            @"SpoofGetters": @YES,
+            @"SpoofScreenMax": @YES,
+            @"DriverOverride": @YES,
+            @"AggressiveReassert": @YES,
+            @"ScrollShield": @YES,
+            @"ForegroundOnly": @NO
+        };
+    }
+    if ([p isEqualToString:@"high"]) {
+        return @{
+            @"ExactRateEnforcement": @YES,
+            @"SpoofGetters": @YES,
+            @"SpoofScreenMax": @YES,
+            @"DriverOverride": @YES,
+            @"AggressiveReassert": @NO,
+            @"ScrollShield": @YES,
+            @"ForegroundOnly": @YES
+        };
+    }
+    if ([p isEqualToString:@"balanced"]) {
+        return @{
+            @"ExactRateEnforcement": @NO,
+            @"SpoofGetters": @NO,
+            @"SpoofScreenMax": @YES,
+            @"DriverOverride": @NO,
+            @"ScrollShield": @YES,
+            @"ForegroundOnly": @YES
+        };
+    }
+    if ([p isEqualToString:@"battery"]) {
+        return @{
+            @"ExactRateEnforcement": @NO,
+            @"SpoofGetters": @NO,
+            @"SpoofScreenMax": @NO,
+            @"DriverOverride": @NO,
+            @"ScrollShield": @NO,
+            @"ForegroundOnly": @YES
+        };
+    }
+    return @{};
+}
+
+// Reads PM_PROFILE_PLIST_PATH, merges profile-name policy + flat keys, and
+// returns a dict meant to be layered over the canonical flat prefs. Fail-closed:
+// a corrupt or missing file returns @{} and the runtime falls back to canonical.
+static NSDictionary *PMLoadProfilePlist(void) {
+    @try {
+        NSDictionary *raw = [NSDictionary dictionaryWithContentsOfFile:PM_PROFILE_PLIST_PATH];
+        if (![raw isKindOfClass:[NSDictionary class]] || raw.count == 0) return @{};
+        PM_METRIC_BUMP(profilePlistLoads);
+        NSMutableDictionary *out = [NSMutableDictionary dictionary];
+
+        // Profile name → policy flags
+        NSString *profileName = [raw[@"Profile"] isKindOfClass:[NSString class]] ? raw[@"Profile"] : nil;
+        NSDictionary *policy = PMProfilePolicyOverrides(profileName);
+        for (NSString *k in policy) out[k] = policy[k];
+
+        // RefreshRate → RefreshMode/CustomRefreshRate (10..240 clamp)
+        id rawHz = raw[@"RefreshRate"];
+        if ([rawHz respondsToSelector:@selector(integerValue)]) {
+            NSInteger hz = MIN(MAX([rawHz integerValue], 10), 240);
+            out[@"RefreshRateEnabled"] = @YES;
+            out[@"RefreshMode"] = @(hz);
+            out[@"CustomRefreshRate"] = @(hz);
+        }
+
+        // FPS → FPSMode/CustomFPS (10..240 clamp)
+        id rawFPS = raw[@"FPS"];
+        if ([rawFPS respondsToSelector:@selector(integerValue)]) {
+            NSInteger fps = MIN(MAX([rawFPS integerValue], 10), 240);
+            out[@"FPSOverrideEnabled"] = @YES;
+            out[@"FPSMode"] = @(fps);
+            out[@"CustomFPS"] = @(fps);
+        }
+
+        // Adaptive → disables ExactRateEnforcement unless profile is Ultra
+        // (Ultra explicitly sets exact YES; adaptive only matters for High/Bal/etc).
+        id rawAdaptive = raw[@"Adaptive"];
+        BOOL adaptive = [rawAdaptive respondsToSelector:@selector(boolValue)] ? [rawAdaptive boolValue] : NO;
+        if (adaptive && ![profileName.lowercaseString isEqualToString:@"ultra"]) {
+            out[@"ExactRateEnforcement"] = @NO;
+        }
+
+        // GameMode → ScrollShield + AggressiveReassert + ForegroundOnly
+        id rawGameMode = raw[@"GameMode"];
+        BOOL gameMode = [rawGameMode respondsToSelector:@selector(boolValue)] ? [rawGameMode boolValue] : NO;
+        if (gameMode) {
+            out[@"ScrollShield"] = @YES;
+            out[@"AggressiveReassert"] = @YES;
+            out[@"ForegroundOnly"] = @YES;
+        }
+
+        // Explicit override keys win over profile-name policy
+        NSArray<NSString *> *passthroughKeys = @[
+            @"ExactRateEnforcement", @"SpoofGetters", @"SpoofScreenMax",
+            @"DriverOverride", @"PanelOverride", @"LockedOverrideThermal",
+            @"AggressiveReassert", @"ScrollShield", @"ForegroundOnly",
+            @"HardLock", @"LockedTarget", @"Enabled",
+            @"AdvancedDisplayEnforcement", @"FramePacing",
+            @"ZeroFluff", @"DriverTargetRate"
+        ];
+        for (NSString *key in passthroughKeys) {
+            id v = raw[key];
+            if (v) out[key] = v;
+        }
+
+        // GameMode without explicit LockedTarget: adopt FPS as the locked target
+        // and turn HardLock on so the 10..240 range matches the declared panel rate.
+        if (gameMode && !out[@"LockedTarget"]) {
+            id rawFPS2 = raw[@"FPS"];
+            if ([rawFPS2 respondsToSelector:@selector(integerValue)]) {
+                NSInteger fps = MIN(MAX([rawFPS2 integerValue], 10), 240);
+                out[@"LockedTarget"] = @(fps);
+                out[@"HardLock"] = @YES;
+            }
+        }
+
+        PMLog(@"Profile plist loaded: name=%@ hz=%@ fps=%@ adaptive=%d gameMode=%d keys=%lu",
+              profileName ?: @"(none)",
+              out[@"RefreshMode"] ?: @"(unset)",
+              out[@"FPSMode"] ?: @"(unset)",
+              adaptive, gameMode, (unsigned long)out.count);
+        return [out copy];
+    } @catch (NSException *exception) {
+        PMLog(@"Profile plist read failed safely: %@", exception);
+        return @{};
+    } @catch (...) {
+        return @{};
+    }
 }
 
 // ============================================================================
@@ -684,14 +835,26 @@ static void PMAttemptDriverOverride(NSInteger targetHz) {
 }
 
 // ============================================================================
-// Load preferences
+// Load preferences — 8.0.1t: profile plist merged at the correct layer.
+// Precedence: legacy < supplemental < canonical-flat < profile < ServerProfiles < AppProfiles
 // ============================================================================
 static void PMLoadPreferencesSync(void) {
     if (__atomic_load_n(&g_PreferencesLoaded, __ATOMIC_ACQUIRE)) return;
     @try {
+        // Layer 1-3: legacy < supplemental < canonical (from helper).
         NSDictionary *rootPrefs = PMLegacyFilzaPreferenceCachedSnapshot();
-        NSDictionary *basePrefs = PMPreferencesForSelectedServer(rootPrefs);
+
+        // Layer 4: profile plist. Wins over canonical flat keys.
+        NSDictionary *profilePrefs = PMLoadProfilePlist();
+        NSMutableDictionary *mergedRoot = [rootPrefs mutableCopy] ?: [NSMutableDictionary dictionary];
+        [mergedRoot addEntriesFromDictionary:profilePrefs];
+
+        // Layer 5: ServerProfiles selected tier (handled inside PMPreferencesForSelectedServer).
+        NSDictionary *basePrefs = PMPreferencesForSelectedServer([mergedRoot copy]);
+
+        // Layer 6: named profiles + per-app AppProfiles (handled inside helper).
         NSDictionary *prefs = PMEffectivePreferencesForCurrentApp(basePrefs);
+
         NSInteger serverMode = [basePrefs[@"ActiveServerMode"] respondsToSelector:@selector(integerValue)]
             ? MIN(MAX([basePrefs[@"ActiveServerMode"] integerValue], 0), 3) : 0;
 
@@ -772,7 +935,6 @@ static void PMLoadPreferencesSync(void) {
         }
         foregroundOnly = PMPreferenceBoolean(basePrefs, @"ForegroundOnlyMode", YES);
         if (serverMode == 3) {
-            // Tier 6 defaults: floor=10 (user-picked target inside), ceiling=240.
             forceMaximum = YES;
             spoofGetters = YES;
         }
@@ -829,9 +991,6 @@ static void PMLoadPreferencesSync(void) {
 
         BOOL lockFloorOn = (policyFlags & PMPolicyForceMinimum) != 0;
         BOOL lockCeilOn  = (policyFlags & PMPolicyForceMaximum) != 0;
-        // ForceMinimum can raise target to a floor, but the range's minimum
-        // field is always 10 — the user asked "min 10". ForceMinimum only
-        // affects the preferred value so the app doesn't idle below it.
         if (lockFloorOn) {
             requestedFPS = MAX(requestedFPS, (NSInteger)PM_LOCKED_FLOOR_HZ);
             requestedHz  = MAX(requestedHz,  (NSInteger)PM_LOCKED_FLOOR_HZ);
@@ -869,10 +1028,11 @@ static void PMLoadPreferencesSync(void) {
         __atomic_store_n(&g_SpoofScreenMax, spoofScreenMax ? 1 : 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_SpoofGetters, spoofGetters ? 1 : 0, __ATOMIC_RELEASE);
 
-        PMLog(@"Prefs: server=%ld active=%d hard=%d drv=%d panel=%d spoofMax=%d spoofGet=%d floor=%d ceil=%d fps=%ld hz=%ld flags=0x%x",
+        PMLog(@"Prefs: server=%ld active=%d hard=%d drv=%d panel=%d spoofMax=%d spoofGet=%d floor=%d ceil=%d fps=%ld hz=%ld profileKeys=%lu flags=0x%x",
               (long)serverMode, active, hardLock, driverOverride, panelOverride,
               spoofScreenMax, spoofGetters, lockFloorOn, lockCeilOn,
-              (long)requestedFPS, (long)requestedHz, (unsigned)policyFlags);
+              (long)requestedFPS, (long)requestedHz,
+              (unsigned long)profilePrefs.count, (unsigned)policyFlags);
     } @catch (NSException *exception) {
         PMLog(@"Prefs snapshot failed safely: %@", exception);
         __atomic_store_n(&g_TweakEnabled, 0, __ATOMIC_RELEASE);
@@ -957,7 +1117,7 @@ static inline BOOL PMAntiOverkillCheck(NSInteger targetFPS) {
         NSInteger hz = PMGetTargetHz();
         if (hz >= 10 && targetFPS >= 10) {
             NSInteger ratio = hz > targetFPS ? (hz / targetFPS) : (targetFPS / hz);
-            if (ratio > 24) return NO; // 10..240 ratio cap
+            if (ratio > 24) return NO;
         }
     } @catch (NSException *e) { return NO; }
     return YES;
@@ -1281,7 +1441,7 @@ void PMControlTweakDumpDiagnostics(void) {
                   (long)PMGetTargetFPS(),
                   (long)PMGetTargetHz(),
                   (unsigned)__atomic_load_n(&g_ServerPolicyFlags, __ATOMIC_ACQUIRE));
-    PMLogCritical(@"diag metrics: adj=%llu getR=%llu getF=%llu spoof=%llu reas=%llu rej=%llu exc=%llu lock=%llu floor=%llu drvOK=%llu swap=%llu maxSp=%llu",
+    PMLogCritical(@"diag metrics: adj=%llu getR=%llu getF=%llu spoof=%llu reas=%llu rej=%llu exc=%llu lock=%llu floor=%llu drvOK=%llu swap=%llu maxSp=%llu plist=%llu",
                   atomic_load(&g_PMMetrics.rateAdjustments),
                   atomic_load(&g_PMMetrics.displayLinkGetRangeHits),
                   atomic_load(&g_PMMetrics.displayLinkGetFPSHits),
@@ -1293,7 +1453,8 @@ void PMControlTweakDumpDiagnostics(void) {
                   atomic_load(&g_PMMetrics.hardFloorEnforcements),
                   atomic_load(&g_PMMetrics.driverWriteSuccesses),
                   atomic_load(&g_PMMetrics.swapIntervalWrites),
-                  atomic_load(&g_PMMetrics.screenMaxSpoofHits));
+                  atomic_load(&g_PMMetrics.screenMaxSpoofHits),
+                  atomic_load(&g_PMMetrics.profilePlistLoads));
 }
 
 static void PMRefreshScreenCaptureState(void) {
@@ -1426,7 +1587,6 @@ static void PMDarwinThermalChanged(CFNotificationCenterRef center,
 
 // ============================================================================
 // 8.0 CADisplayLink: getter spoof + setter force.
-// Getter returns the chosen target verbatim — that's the whole point.
 // ============================================================================
 %hook CADisplayLink
 - (instancetype)initWithTarget:(id)target selector:(SEL)sel {
@@ -1438,7 +1598,6 @@ static void PMDarwinThermalChanged(CFNotificationCenterRef center,
     return instance;
 }
 
-// GETTER SPOOF — returns the picked value no matter what CA holds internally.
 - (NSInteger)preferredFramesPerSecond {
     if (PMSpoofGettersEnabled() && PMIsTweakActive() &&
         (PMHardLockEnabled() || __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE) == 3)) {
@@ -1774,7 +1933,7 @@ static void PMStopDriverMonitor(void) {
                 PMStopDriverMonitor();
             }];
 
-            PMLogCritical(@"%@ | GETTER-SPOOF build init; server=%d active=%d hard=%d spoofMax=%d spoofGet=%d unlock=%ld target=%ld",
+            PMLogCritical(@"%@ | GETTER-SPOOF+PLIST build init; server=%d active=%d hard=%d spoofMax=%d spoofGet=%d unlock=%ld target=%ld",
                   PM_BUILD_VERSION,
                   (int)__atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE),
                   (int)PMIsTweakActive(),
