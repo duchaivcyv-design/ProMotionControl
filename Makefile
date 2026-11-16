@@ -31,7 +31,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ProMotionControl
 
-ProMotionControl_FILES = Tweak.xm \
+ProMotionControl_FILES = Tweak.x \
                          TitaniumSettingsAPI.x \
                          TitaniumUltimateDeepEngine.x \
                          TitaniumHardwareOverdriveGuard.x \
