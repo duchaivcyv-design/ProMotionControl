@@ -12,5 +12,17 @@
 	<true/>
 	<key>GameMode</key>
 	<true/>
+	<key>ExactRateEnforcement</key>
+	<true/>
+	<key>SpoofGetters</key>
+	<true/>
+	<key>SpoofScreenMax</key>
+	<true/>
+	<key>DriverOverride</key>
+	<true/>
+	<key>PanelOverride</key>
+	<false/>
+	<key>LockedOverrideThermal</key>
+	<false/>
 </dict>
 </plist>
