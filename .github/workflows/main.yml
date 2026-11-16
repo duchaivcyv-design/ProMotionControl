@@ -68,11 +68,19 @@ jobs:
       - name: download sdks
         if: steps.cache-sdks.outputs.cache-hit != 'true'
         run: |
+          # Đảm bảo thư mục theos/sdks tồn tại và có quyền ghi
+          mkdir -p "$GITHUB_WORKSPACE/theos/sdks"
+          chmod -R 777 "$GITHUB_WORKSPACE/theos/sdks" # Cấp quyền tối đa để đảm bảo không bị lỗi quyền
+          
           curl -LO https://github.com/theos/sdks/archive/master.zip
-          unzip -q master.zip
-          mkdir -p theos/sdks
-          mv sdks-master/*.sdk theos/sdks/
-          rm -rf master.zip sdks-master
+          unzip -q master.zip -d sdks_temp # Giải nén vào một thư mục tạm biệt lập
+          
+          # Di chuyển các SDK một cách an toàn
+          # Sử dụng find và mv để chỉ di chuyển các thư mục .sdk
+          find sdks_temp/sdks-master -maxdepth 1 -type d -name "*.sdk" -exec mv {} "$GITHUB_WORKSPACE/theos/sdks/" \;
+          
+          # Dọn dẹp các tệp tạm
+          rm -rf master.zip sdks_temp
 
       - name: set THEOS env var
         run: echo "THEOS=$GITHUB_WORKSPACE/theos" >> $GITHUB_ENV
