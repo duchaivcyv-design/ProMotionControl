@@ -4,20 +4,38 @@
 // FREE / PREMIUM / ADMIN Titanium bridge. The Logos group is always initialized; every
 // override still checks Apex_IsMasterEnabled() at call time so profile changes take effect.
 //
-// 5.9.0t integration edits (only these, everything else verbatim):
-//   - PM_SAFE_TRY wrap on IORegistryEntry %orig path (this hook fires hot)
-//   - Cheap first-char pre-check on IORegistryEntry key (skips lowercaseString alloc
-//     for keys that clearly cannot match "thermal"/"power"/"throttle"/"charge"/etc)
-//   - KGNote marker on NSProcessInfo hook documenting that this module's Nominal
-//     spoof overrides Tweak.xm's PMThermalTargetCap thermal shedding unconditionally
-//     when Apex_IsMasterEnabled() is YES (LockedOverrideThermal becomes redundant).
+// 8.4.3t integration edits (only these, everything else verbatim):
+//   [STANDALONE] `#import "TitaniumSettingsAPI.h"` removed. Bridge externs
+//                (Titanium_GetMasterRate, Apex_IsMasterEnabled,
+//                Titanium_SharedRealThermalState) are inlined below. Linker
+//                resolves them at dylib load from TitaniumSettingsAPI.x.
+//   [8.3.0t]    thermalState hook writes the REAL %orig to the shared global
+//               BEFORE softening. This is what makes Supreme's critical-thermal
+//               safeguard reachable — without it, Supreme's %orig is already
+//               the softened Nominal, and the `>= Critical` branch never fires.
+//   [SAFE]      PM_SAFE_TRY wrap on IORegistryEntry %orig path (hot).
+//   [PERF]      Cheap first-char pre-check on IORegistryEntry key.
+//   [NOTE]      KGNote marker on NSProcessInfo: this module's Nominal spoof
+//               overrides Tweak.xm's PMThermalTargetCap shedding unconditionally
+//               when Apex_IsMasterEnabled() is YES (LockedOverrideThermal redundant).
 // =================================================================================================
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <AVFoundation/AVFoundation.h>
 #import <mach/mach.h>
 #import <pthread.h>
-#import "TitaniumSettingsAPI.h"
+
+// --- Bridge externs, inlined (was: #import "TitaniumSettingsAPI.h") ---------
+// Titanium_GetMasterRate: selected master rate (10..244), or 0 for AUTO/inactive.
+// Apex_IsMasterEnabled: YES only when runtime is fully active in this process.
+// Titanium_SharedRealThermalState: 0=Nominal, 1=Fair, 2=Serious, 3=Critical.
+//   This file is the FIRST writer — the thermalState hook below stores the raw
+//   %orig here before softening. TitaniumApexSupremeUltimateEngine.x reads it.
+//   Declared volatile so cross-thread reads see the latest store on arm64.
+extern NSInteger Titanium_GetMasterRate(void);
+extern BOOL Apex_IsMasterEnabled(void);
+extern volatile NSInteger Titanium_SharedRealThermalState;
+// ---------------------------------------------------------------------------
 
 // Same exception-catch macro used by the main tweak; redeclared here so this
 // file compiles independently of Tweak.xm's translation unit.
@@ -30,10 +48,6 @@
         NSLog(@"[ProMotionControl/Overdrive] Non-NSException swallowed"); \
     }
 #endif
-
-// Khai báo extern lấy thông số từ Core Engine
-extern NSInteger Titanium_GetMasterRate(void);
-extern BOOL Apex_IsMasterEnabled(void);
 
 // Cheap key-match helper. The set of matched substrings is fixed; a first-char
 // gate on t/T/p/P/c/C (thermal / power / performance-controller / charge /
@@ -92,12 +106,20 @@ static inline BOOL Titanium_Overdrive_KeyIsThrottleRelated(NSString *key) {
 // Apex_IsMasterEnabled() is YES — the physical cap is bypassed at the source. The
 // watchdog can still kill the app if the SoC genuinely overheats; this module does
 // not and cannot override the kernel's emergency shutdown.
+//
+// [8.3.0t] IMPORTANT: this hook stores the REAL %orig to Titanium_SharedRealThermalState
+// BEFORE softening. This file is FIRST in the NSProcessInfo chain (registers before
+// Supreme), so %orig here is the real system state. Supreme's hook, which runs after,
+// reads the shared global to make its Critical-vs-Nominal decision. Without this write,
+// the Supreme critical-thermal safeguard is unreachable.
 // =================================================================================================
 %hook NSProcessInfo
 - (NSProcessInfoThermalState)thermalState {
     // Evaluate the previous hook/original implementation first. This preserves the
     // real-state snapshot used by the Supreme safeguard when several engines coexist.
     NSProcessInfoThermalState originalState = %orig;
+    // [8.3.0t] Store the REAL state so Supreme's critical-thermal branch can fire.
+    Titanium_SharedRealThermalState = (NSInteger)originalState;
     if (Apex_IsMasterEnabled()) {
         // Luôn báo cáo trạng thái nhiệt độ ở mức chuẩn tối ưu (Nominal), ngăn iOS tự động bóp Hz, FPS và hiệu năng chip
         return NSProcessInfoThermalStateNominal;
