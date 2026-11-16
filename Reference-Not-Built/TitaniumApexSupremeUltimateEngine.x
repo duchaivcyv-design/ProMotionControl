@@ -5,7 +5,12 @@
 // this project, to keep the Titanium FREE/PREMIUM/ADMIN bridge contract (0 = AUTO),
 // and to make the "critical thermal" safeguard actually reachable.
 //
-// 5.9.0t integration edits (only these, everything else verbatim):
+// 8.4.2t integration edits (only these, everything else verbatim):
+//   [STANDALONE] `#import "TitaniumSettingsAPI.h"` removed. All four bridge externs
+//                (Titanium_GetMasterRate, Apex_IsMasterEnabled,
+//                g_isCurrentAppBlacklisted, Titanium_SharedRealThermalState) are
+//                declared inline below. Linker resolves them at dylib load from
+//                TitaniumSettingsAPI.x. No header dependency.
 //   [FIX] Titanium_RealThermalStateSnapshot() now reads from a shared global
 //         (Titanium_SharedRealThermalState) instead of calling thermalState
 //         through the hook chain. Without this, Supreme's %orig is Overdrive's
@@ -27,21 +32,19 @@
 #import <sys/socket.h>
 #import <netinet/in.h>
 
-// Khai báo các hàm ngoại vi từ Core Bridge điều khiển tổng
-#import "TitaniumSettingsAPI.h"
-
+// --- Bridge externs, inlined (was: #import "TitaniumSettingsAPI.h") ---------
+// Titanium_GetMasterRate: selected master rate (10..244), or 0 for AUTO/inactive.
+// Apex_IsMasterEnabled: YES only when runtime is fully active in this process.
+// g_isCurrentAppBlacklisted: per-process opt-out, default NO.
+// Titanium_SharedRealThermalState: 0=Nominal, 1=Fair, 2=Serious, 3=Critical —
+//   written by HardwareOverdriveGuard's thermalState hook (first in chain, sees
+//   real %orig before softening), read here for the critical-thermal safeguard.
+//   Declared `volatile` so cross-thread writes/reads see the latest value on arm64.
 extern NSInteger Titanium_GetMasterRate(void);
 extern BOOL Apex_IsMasterEnabled(void);
 extern BOOL g_isCurrentAppBlacklisted;
-
-// Shared real thermal state — populated by HardwareOverdriveGuard's thermalState
-// hook (which sees the real %orig before softening) and read here so the
-// IORegistryEntry safeguard can make a Critical-vs-Nominal decision on the
-// ACTUAL state. This extern is declared in TitaniumSettingsAPI.h and defined
-// in TitaniumSettingsAPI.x (see PATCH block below).
-//
-// Values: 0 = Nominal, 1 = Fair, 2 = Serious, 3 = Critical
 extern volatile NSInteger Titanium_SharedRealThermalState;
+// ---------------------------------------------------------------------------
 
 // Bridge integration: getSelectedHz returns 0 for AUTO so the Supreme layer can
 // never divide by zero or advertise a 0 Hz mode. It only overrides on 10...244.
