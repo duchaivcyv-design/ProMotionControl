@@ -1,0 +1,12 @@
+Package: com.dell.promotioncontrol
+Name: ProMotion Control
+Version: 5.8.82t
+Architecture: iphoneos-arm64
+Depends: firmware (>= 15.0), mobilesubstrate (>= 0.9.5000)
+Description: Không biết để gì, lên TikTok @nguyenminhhai_2012 để tham khảo. Hỗ trợ iOS 15+.
+ ProMotion Control tweak và ứng dụng cấu hình độc lập: hồ sơ theo từng app, điều khiển Hz/FPS,
+ bản đồ chỉ hiển thị vị trí GPS chính xác của iPhone, và tách rõ giới hạn phần cứng với yêu cầu phần mềm.
+ Runtime hooks are isolated to the control app and follow the FREE/PREMIUM/ADMIN TitaniumSettingsAPI snapshot.
+Maintainer: Nguyễn Minh Hải, Taojb
+Author: Nguyễn Minh Hải, Taojb
+Section: Tweaks

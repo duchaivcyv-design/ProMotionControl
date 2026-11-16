@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Profile</key>
+	<string>SafeRecovery</string>
+	<key>RefreshRate</key>
+	<integer>60</integer>
+	<key>FPS</key>
+	<integer>60</integer>
+	<key>Adaptive</key>
+	<true/>
+	<key>GameMode</key>
+	<false/>
+	<key>ThermalGuard</key>
+	<true/>
+	<key>WatchdogGuard</key>
+	<true/>
+</dict>
+</plist>

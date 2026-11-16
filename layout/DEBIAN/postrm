@@ -1,0 +1,50 @@
+#!/bin/sh
+set -u
+if [ "${1:-}" = "remove" ] || [ "${1:-}" = "purge" ]; then
+    PREFS_DIR="/var/mobile/Library/Preferences"
+    PREFS_FILE="$PREFS_DIR/com.promotioncontrol.prefs.plist"
+    PREFS_BACKUP="$PREFS_FILE.bak"
+    PREFS_BACKUP_OWNED_MARKER="$PREFS_DIR/.com.promotioncontrol.prefs.plist.pm-backup-owned"
+    PREFS_CREATED_MARKER="$PREFS_DIR/.com.promotioncontrol.prefs.plist.pm-created"
+    INSTALL_ID_FILE="$PREFS_DIR/.com.dell.promotioncontrol.installation-id"
+    RESTORE_TMP="$PREFS_FILE.pm-restore.$$"
+
+    # A real remove/purge revokes the current install identity. On a later
+    # install, postinst generates a new value and previously saved Premium
+    # authorization will no longer match. The "upgrade" action never reaches
+    # this branch, preserving authorization across normal package upgrades.
+    rm -f "$INSTALL_ID_FILE" "$INSTALL_ID_FILE.tmp."* 2>/dev/null || true
+
+    # Restore only backups created by this package. A pre-existing/user-owned .bak
+    # is never adopted or deleted. If there was no original plist, remove only the
+    # plist that this package created. A postrm "upgrade" leaves settings untouched.
+    if [ -f "$PREFS_BACKUP_OWNED_MARKER" ] && [ -f "$PREFS_BACKUP" ]; then
+        if cp -p "$PREFS_BACKUP" "$RESTORE_TMP" 2>/dev/null && mv -f "$RESTORE_TMP" "$PREFS_FILE" 2>/dev/null; then
+            chown mobile:mobile "$PREFS_FILE" 2>/dev/null || true
+            rm -f "$PREFS_BACKUP" "$PREFS_BACKUP_OWNED_MARKER" "$PREFS_CREATED_MARKER"
+        else
+            rm -f "$RESTORE_TMP"
+        fi
+    elif [ -f "$PREFS_CREATED_MARKER" ]; then
+        rm -f "$PREFS_FILE" "$PREFS_CREATED_MARKER"
+    fi
+
+    UICACHE=""
+    for candidate in /var/jb/usr/bin/uicache /var/jb/usr/libexec/uicache /usr/bin/uicache /usr/libexec/uicache /usr/local/bin/uicache /.installed_dopamine/usr/bin/uicache /.jbroot-*/basebin/uicache /.jbroot-*/usr/bin/uicache; do
+        if [ -x "$candidate" ]; then UICACHE="$candidate"; break; fi
+    done
+    [ -n "$UICACHE" ] || UICACHE="$(command -v uicache 2>/dev/null || true)"
+    if [ -n "$UICACHE" ]; then
+        for root in /Applications /var/jb/Applications /private/var/jb/Applications /private/var/containers/Bundle/Application /var/containers/Bundle/Application; do
+            [ -d "$root" ] || continue
+            if [ "$root" = "/private/var/containers/Bundle/Application" ] || [ "$root" = "/var/containers/Bundle/Application" ]; then
+                find "$root" -type d -name ProMotionControl.app -prune -print 2>/dev/null | while IFS= read -r app; do
+                    "$UICACHE" -u "$app" >/dev/null 2>&1 || true
+                done
+            else
+                "$UICACHE" -u "$root/ProMotionControl.app" >/dev/null 2>&1 || true
+            fi
+        done
+    fi
+fi
+exit 0

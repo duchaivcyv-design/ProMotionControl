@@ -1,0 +1,211 @@
+#!/bin/sh
+# Safe standalone-app registration: never unregister the icon before we know
+# a valid bundle can be registered. Supports rootless and RootHide paths.
+set -u
+LOG_FILE="/tmp/ProMotionControl-postinst.log"
+APP_NAME="ProMotionControl.app"
+APP_EXE="ProMotionControlApp"
+APP_BUNDLE_ID="com.dell.promotioncontrol.app"
+: > "$LOG_FILE" 2>/dev/null || true
+log() { printf '%s\n' "$*" >> "$LOG_FILE" 2>/dev/null || true; }
+
+# Seed the legacy preferences domain used by Filza and older ProMotionControl builds.
+# Preserve any existing values: explicit enabled=NO is never overwritten.
+# Legacy animation-lock keys are retired and removed from the visible plist below.
+PREFS_DIR="/var/mobile/Library/Preferences"
+PREFS_FILE="$PREFS_DIR/com.promotioncontrol.prefs.plist"
+PREFS_BACKUP="$PREFS_FILE.bak"
+PREFS_BACKUP_OWNED_MARKER="$PREFS_DIR/.com.promotioncontrol.prefs.plist.pm-backup-owned"
+PREFS_CREATED_MARKER="$PREFS_DIR/.com.promotioncontrol.prefs.plist.pm-created"
+CANONICAL_PREFS="$PREFS_DIR/com.dell.promotioncontrol.plist"
+INSTALL_ID_FILE="$PREFS_DIR/.com.dell.promotioncontrol.installation-id"
+mkdir -p "$PREFS_DIR" 2>/dev/null || true
+
+# Create one random installation identifier. It survives package upgrades but
+# postrm removes it on remove/purge, so a later reinstall requires Premium auth.
+if [ ! -s "$INSTALL_ID_FILE" ]; then
+  INSTALL_ID="$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  case "$INSTALL_ID" in
+    *[!0-9a-fA-F]*|'') INSTALL_ID="" ;;
+  esac
+  if [ "${#INSTALL_ID}" -ge 32 ]; then
+    INSTALL_ID_TMP="$INSTALL_ID_FILE.tmp.$$"
+    (umask 077; printf '%s\n' "$INSTALL_ID" > "$INSTALL_ID_TMP") 2>/dev/null && \
+      mv -f "$INSTALL_ID_TMP" "$INSTALL_ID_FILE" 2>/dev/null || rm -f "$INSTALL_ID_TMP"
+    if [ -s "$INSTALL_ID_FILE" ]; then
+      chown mobile:mobile "$INSTALL_ID_FILE" 2>/dev/null || true
+      chmod 0600 "$INSTALL_ID_FILE" 2>/dev/null || true
+      log "Created tweak installation identity for Premium authorization."
+    else
+      log "WARNING: could not persist tweak installation identity; Premium will remain unavailable and FREE will continue."
+    fi
+  else
+    log "WARNING: random installation identity could not be generated; Premium will remain unavailable and FREE will continue."
+  fi
+fi
+
+# Record the pre-install state exactly once. Never overwrite an existing .bak
+# or overwrite a previously user-created Filza plist. If no original plist existed,
+# mark the defaults-created file so postrm can remove it on an actual package removal.
+if [ -e "$PREFS_FILE" ]; then
+  if [ ! -e "$PREFS_CREATED_MARKER" ] && [ ! -e "$PREFS_BACKUP_OWNED_MARKER" ] && [ ! -e "$PREFS_BACKUP" ]; then
+    if cp -p "$PREFS_FILE" "$PREFS_BACKUP" 2>/dev/null; then
+      printf '%s\n' 'created by ProMotionControl package installer' > "$PREFS_BACKUP_OWNED_MARKER" 2>/dev/null || true
+      log "Backed up pre-existing Filza preferences to $PREFS_BACKUP."
+    else
+      log "WARNING: couldn't back up pre-existing Filza preferences; leaving source file untouched before seeding."
+    fi
+  fi
+else
+  if [ ! -e "$PREFS_BACKUP" ] && [ ! -e "$PREFS_BACKUP_OWNED_MARKER" ] && [ ! -e "$PREFS_CREATED_MARKER" ]; then
+    printf '%s\n' 'preferences plist was absent before ProMotionControl install' > "$PREFS_CREATED_MARKER" 2>/dev/null || true
+  fi
+fi
+DEFAULT_ENABLED="YES"
+if command -v plutil >/dev/null 2>&1 && [ -f "$CANONICAL_PREFS" ]; then
+  canonical_enabled="$(plutil -extract Enabled raw -o - "$CANONICAL_PREFS" 2>/dev/null || true)"
+  case "$canonical_enabled" in false|0|NO|no) DEFAULT_ENABLED="NO" ;; esac
+fi
+if [ ! -e "$PREFS_FILE" ]; then
+  if [ "$DEFAULT_ENABLED" = "YES" ]; then enabled_xml='<true/>'; else enabled_xml='<false/>'; fi
+  cat > "$PREFS_FILE" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>enabled</key>$enabled_xml
+  <key>selectedHz</key><integer>120</integer>
+  <key>selectedFPS</key><integer>120</integer>
+  <key>disableDisplaySync</key><false/>
+</dict>
+</plist>
+PLIST
+  log "Created legacy Filza preferences at $PREFS_FILE (enabled=$DEFAULT_ENABLED, selectedHz/FPS=120)."
+else
+  # Existing dictionaries are edited only by adding absent keys. If plutil cannot
+  # handle an installed iOS plist variant, leave it intact; runtime defaults remain.
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -insert enabled -bool "$DEFAULT_ENABLED" "$PREFS_FILE" 2>/dev/null || true
+    plutil -insert selectedHz -integer 120 "$PREFS_FILE" 2>/dev/null || true
+    plutil -insert selectedFPS -integer 120 "$PREFS_FILE" 2>/dev/null || true
+    plutil -insert disableDisplaySync -bool false "$PREFS_FILE" 2>/dev/null || true
+  fi
+  log "Preserved existing legacy Filza preferences; attempted to add only missing keys."
+fi
+if [ -f "$PREFS_FILE" ]; then
+  if command -v plutil >/dev/null 2>&1 && plutil -lint "$PREFS_FILE" >/dev/null 2>&1; then
+    chown mobile:mobile "$PREFS_FILE" 2>/dev/null || true
+    chmod 0644 "$PREFS_FILE" 2>/dev/null || true
+    for retired_key in GlobalAnimationLock GlobalAnimationLockForceOff GlobalAnimationLockUpdatedAt; do
+      plutil -remove "$retired_key" "$PREFS_FILE" 2>/dev/null || true
+    done
+    log "Legacy preferences plist validated; obsolete animation-lock keys removed where present."
+  else
+    log "WARNING: could not validate legacy preferences plist; left existing contents intact where possible."
+  fi
+fi
+
+CANDIDATES="/tmp/pm-app-candidates.$$"
+UNIQUE="/tmp/pm-app-unique.$$"
+trap 'rm -f "$CANDIDATES" "$UNIQUE"' EXIT HUP INT TERM
+: > "$CANDIDATES" 2>/dev/null || true
+
+# Add stable package-managed paths first; do not blindly prefer a physical
+# RootHide path if a supported logical alias exists.
+for p in "/var/jb/Applications/$APP_NAME" "/Applications/$APP_NAME" "/private/var/jb/Applications/$APP_NAME"; do
+  if [ -e "$p" ] || [ -L "$p" ]; then printf '%s\n' "$p" >> "$CANDIDATES"; fi
+done
+
+# Ask dpkg where it installed the app; this is usually the most authoritative source.
+if command -v dpkg-query >/dev/null 2>&1; then
+  dpkg-query -L com.dell.promotioncontrol 2>/dev/null \
+    | sed -n 's#\(.*\/Applications\/ProMotionControl\.app\)/Info\.plist$#\1#p' \
+    >> "$CANDIDATES" || true
+fi
+
+# Do not recursively scan every application container during package installation.
+# The fixed rootless aliases and dpkg-query -L path above are authoritative and much faster.
+awk 'NF && !seen[$0]++' "$CANDIDATES" > "$UNIQUE" 2>/dev/null || true
+
+read_plist() {
+  key="$1"; plist="$2"
+  if command -v plutil >/dev/null 2>&1; then
+    value="$(plutil -extract "$key" raw -o - "$plist" 2>/dev/null || true)"
+    [ -n "$value" ] && { printf '%s' "$value"; return 0; }
+  fi
+  awk -v key="$key" '$0 ~ "<key>" key "</key>" { if (getline > 0) { sub(/^.*<string>/, ""); sub(/<\/string>.*$/, ""); print; exit } }' "$plist" 2>/dev/null
+}
+
+APP_PATH=""
+while IFS= read -r candidate; do
+  [ -n "$candidate" ] || continue
+  [ -d "$candidate" ] || continue
+  [ -f "$candidate/Info.plist" ] || continue
+  expected="$candidate/$APP_EXE"
+  tmp="$expected.dpkg-tmp"
+  # Recover only the exact expected executable, and only if it is missing.
+  if [ ! -e "$expected" ] && [ -f "$tmp" ] && [ -x "$tmp" ]; then
+    log "Recovering expected executable name from $tmp"
+    mv "$tmp" "$expected" || { log "ERROR: executable recovery failed for $candidate"; continue; }
+    chmod 755 "$expected" 2>/dev/null || true
+  fi
+  [ -x "$expected" ] || { log "Skipping bundle without executable: $candidate"; continue; }
+  [ ! -e "$tmp" ] || { log "Skipping bundle with unresolved dpkg-tmp: $candidate"; continue; }
+  exe="$(read_plist CFBundleExecutable "$candidate/Info.plist" || true)"
+  bid="$(read_plist CFBundleIdentifier "$candidate/Info.plist" || true)"
+  [ "$exe" = "$APP_EXE" ] && [ "$bid" = "$APP_BUNDLE_ID" ] || { log "Skipping bundle with unexpected plist metadata: $candidate (exe=$exe id=$bid)"; continue; }
+  APP_PATH="$candidate"
+  break
+done < "$UNIQUE"
+
+if [ -z "$APP_PATH" ]; then
+  log "ERROR: no valid standalone app bundle found; no app registrations were removed."
+  exit 0
+fi
+log "Validated standalone bundle: $APP_PATH"
+
+# Locate uicache, including RootHide basebin. Avoid -u: unregistering first can
+# make the icon disappear permanently if the following registration fails.
+UICACHE=""
+REAL="$(readlink -f "$APP_PATH" 2>/dev/null || printf '%s' "$APP_PATH")"
+JBROOT="$(printf '%s\n' "$REAL" | sed -n 's#^\(.*\/\.jbroot-[^/]*\)/.*#\1#p')"
+if [ -n "$JBROOT" ]; then
+  for p in "$JBROOT/basebin/uicache" "$JBROOT/usr/bin/uicache" "$JBROOT/usr/libexec/uicache" "$JBROOT/var/jb/usr/bin/uicache" "$JBROOT/var/jb/usr/libexec/uicache"; do
+    if [ -x "$p" ]; then UICACHE="$p"; break; fi
+  done
+fi
+if [ -z "$UICACHE" ]; then
+  for p in /var/jb/usr/bin/uicache /var/jb/usr/libexec/uicache /usr/bin/uicache /usr/libexec/uicache /usr/local/bin/uicache /.installed_dopamine/usr/bin/uicache /.jbroot-*/basebin/uicache /.jbroot-*/usr/bin/uicache /.jbroot-*/usr/libexec/uicache; do
+    if [ -x "$p" ]; then UICACHE="$p"; break; fi
+  done
+fi
+[ -n "$UICACHE" ] || UICACHE="$(command -v uicache 2>/dev/null || true)"
+if [ -z "$UICACHE" ]; then
+  log "ERROR: uicache not found. Bundle remains installed; no registrations were removed."
+  exit 0
+fi
+log "Using uicache: $UICACHE"
+
+# Register the exact dpkg-managed app path first, then its resolved path if different.
+REGISTERED=0
+for p in "$APP_PATH" "$REAL"; do
+  [ -d "$p" ] || [ -L "$p" ] || continue
+  # Revalidate metadata/executable through the real bundle before attempting registration.
+  log "Attempting non-destructive registration: $p"
+  if "$UICACHE" -p "$p" >> "$LOG_FILE" 2>&1; then
+    log "SUCCESS: registered $p"
+    REGISTERED=1
+    break
+  else
+    log "WARNING: uicache -p failed for $p"
+  fi
+done
+if [ "$REGISTERED" -eq 0 ]; then
+  # Refresh as a last resort. Crucially, do not unregister any entry first.
+  if "$UICACHE" -a >> "$LOG_FILE" 2>&1; then
+    log "SUCCESS: uicache -a refresh; targeted result unknown"
+  else
+    log "ERROR: icon registration attempts failed; bundle was not removed."
+  fi
+fi
+exit 0
