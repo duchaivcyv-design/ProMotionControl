@@ -1,6 +1,6 @@
 Package: com.dell.promotioncontrol
 Name: ProMotion Control
-Version: 5.8.82t
+Version: 5.9.0t
 Architecture: iphoneos-arm64
 Depends: firmware (>= 15.0), mobilesubstrate (>= 0.9.5000)
 Description: Không biết để gì, lên TikTok @nguyenminhhai_2012 để tham khảo. Hỗ trợ iOS 15+.
