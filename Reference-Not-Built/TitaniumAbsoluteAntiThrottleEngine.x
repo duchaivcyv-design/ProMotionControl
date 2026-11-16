@@ -9,19 +9,36 @@
 //    produces a 0 Hz / 0 FPS hardware request.
 //  - All rates are clamped to 10...244 before being divided or handed to the panel.
 //  - Thermal/LPM getters call %orig first to preserve the hook chain of the other modules.
+//
+// 8.4.0t integration notes (user requested no .h changes):
+//  - Removed `#import "TitaniumSettingsAPI.h"`. The bridge externs are inlined
+//    below so this file builds standalone against the existing dylib symbols.
+//  - Titanium_GetMasterFPS() does NOT exist in the bridge. In this build,
+//    PM_ExportMasterRate() already returns PMGetTargetFPS() — i.e. the FPS
+//    selection is the master rate. Aliased via a static inline so the call
+//    sites in this file stay verbatim.
 // =================================================================================================
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <mach/mach.h>
 #import <pthread.h>
 #import <math.h>
-#import "TitaniumSettingsAPI.h"
 
-// Khai báo extern lấy thông số Hz & FPS chuẩn xác từ Core API
-extern NSInteger Titanium_GetMasterRate(void);
-extern NSInteger Titanium_GetMasterFPS(void);
-extern BOOL Apex_IsMasterEnabled(void);
+// --- Bridge externs, inlined (was: #import "TitaniumSettingsAPI.h") ---------
+extern NSInteger PM_ExportMasterRate(void);
+extern BOOL PM_ExportMasterEnabled(void);
 extern BOOL g_isCurrentAppBlacklisted;
+
+// These two resolve to the bridge's TitaniumSettingsAPI.x definitions.
+extern NSInteger Titanium_GetMasterRate(void);
+extern BOOL Apex_IsMasterEnabled(void);
+
+// [8.4.0t] Alias for the missing Titanium_GetMasterFPS(). PM_ExportMasterRate
+// already returns PMGetTargetFPS() in Tweak.xm, so Hz and FPS resolve to the
+// same value in this build. Kept as a separate symbol so the supplied call
+// sites in Titanium_AntiThrottleEffectiveFPS() remain verbatim.
+static inline NSInteger Titanium_GetMasterFPS(void) { return PM_ExportMasterRate(); }
+// ---------------------------------------------------------------------------
 
 #pragma mark - Shared helpers
 
@@ -63,6 +80,14 @@ static inline BOOL Titanium_AntiThrottleSystemHooksAllowed(void) {
 
 // =================================================================================================
 // 1. CADISPLAYLINK — Ép chính xác Hz/FPS đã chọn cho mọi vòng lặp render
+//
+// NOTE: also %hooked by Tweak.xm (8.0.1t), Deep (8.1.0t), Supreme (8.3.0t).
+// 4-way chain in registration order: AntiThrottle -> Supreme -> Deep -> Tweak.xm -> real.
+// Each layer, when active, writes [target, target, target]. All four resolve target
+// from PM_ExportMasterRate() (same value), so the final output is identical regardless
+// of chain depth. Cost is 4x dispatch per setter call — acceptable, but if you ever
+// want to slim the hot path, remove this module's CADisplayLink section or remove
+// the equivalent section from Tweak.xm/Deep/Supreme (all four are redundant).
 // =================================================================================================
 %hook CADisplayLink
 - (void)setPreferredFrameRateRange:(CAFrameRateRange)range {
@@ -93,6 +118,10 @@ static inline BOOL Titanium_AntiThrottleSystemHooksAllowed(void) {
 
 // =================================================================================================
 // 2. CAWINDOWSERVERDISPLAY — Khóa thời lượng khung hình và tần số quét tối đa
+//
+// NOTE: also %hooked by Deep (8.1.0t) and Supreme (8.3.0t). Same contract,
+// idempotent — 3-way chain. 1.0/rate is safe here because all three modules
+// clamp the rate to 10..244 before dividing.
 // =================================================================================================
 %hook CAWindowServerDisplay
 - (void)setMinimumFrameDuration:(double)duration {
@@ -132,6 +161,11 @@ static inline BOOL Titanium_AntiThrottleSystemHooksAllowed(void) {
 
 // =================================================================================================
 // 3. IOMOBILEFRAMEBUFFERCLIENT — Chặn lệnh hạ tần số quét từ tầng framebuffer
+//
+// NOTE: also %hooked by Deep (8.1.0t) and Supreme (8.3.0t). 3-way chain. The
+// framebuffer write is a no-op on iOS 15+ in userspace (returns -1 / rejects)
+// regardless of hook; the hook short-circuits with return 0 for callers that
+// interpret success, avoiding the retry path. No physical hardware change.
 // =================================================================================================
 %hook IOMobileFramebufferClient
 - (int)setDisplayRefreshRate:(float)rate options:(unsigned int)options {
@@ -163,6 +197,14 @@ static inline BOOL Titanium_AntiThrottleSystemHooksAllowed(void) {
 
 // =================================================================================================
 // 4. IOREGISTRY & POWER MANAGEMENT — Triệt tiêu lệnh bóp hiệu năng ở tầng thuộc tính
+//
+// NOTE: 4th %hook on IORegistryEntry:setCFProperty:withValue:. Full chain:
+// AntiThrottle -> Supreme -> Overdrive -> Deep -> real IORegistry.
+// AntiThrottle is guarded by Titanium_AntiThrottleSystemHooksAllowed(), which
+// returns NO in com.dell.promotioncontrol.app — the ONLY bundle this tweak
+// loads in. Net effect: this section is a pass-through %orig in the control
+// app. Its real target is SpringBoard (out of current filter scope). Ship as
+// supplied; document only.
 // =================================================================================================
 %hook IORegistryEntry
 - (kern_return_t)setCFProperty:(NSString *)key withValue:(id)value {
@@ -179,6 +221,13 @@ static inline BOOL Titanium_AntiThrottleSystemHooksAllowed(void) {
 
 // =================================================================================================
 // 5. PROCESS INFO — Khóa trạng thái nhiệt độ và Low Power Mode ở mức hiệu năng đầy đủ
+//
+// NOTE: 3rd %hook on NSProcessInfo thermalState / isLowPowerModeEnabled. Chain:
+// AntiThrottle -> Supreme -> Overdrive -> real. AntiThrottle is guarded by
+// Titanium_AntiThrottleSystemHooksAllowed() — this section is a pass-through
+// in the control app. Section 4/5/6 combined are dead code in the current
+// filter (control-app-only); they exist for future SpringBoard injection.
+// %orig is called first, per the supplied code, so the chain stays correct.
 // =================================================================================================
 %hook NSProcessInfo
 - (NSProcessInfoThermalState)thermalState {
@@ -202,6 +251,11 @@ static inline BOOL Titanium_AntiThrottleSystemHooksAllowed(void) {
 
 // =================================================================================================
 // 6. AGXACCELERATOR — Ép GPU/CPU bám mức hiệu năng cao nhất, chống tụt khung hình
+//
+// NOTE: 4th %hook on AGXAccelerator. Also guarded by
+// Titanium_AntiThrottleSystemHooksAllowed(). AGXAccelerator is kernel-side and
+// does not exist in a userspace app process — the %hook compiles to a Logos
+// no-op regardless of the guard. Pass-through %orig.
 // =================================================================================================
 %hook AGXAccelerator
 - (int)setPowerState:(unsigned int)state {
