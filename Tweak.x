@@ -1,6 +1,6 @@
 // ============================================================================
 // ProMotionControl — Tweak runtime (iOS 15+)
-// Build: 8.0.1t — GETTER SPOOF, [10, 240, target] all paths + Profile plist
+// Build: 5.9.0t — GETTER SPOOF, [10, 240, target] all paths + Profile plist
 // Getter hooks: preferredFramesPerSecond + preferredFrameRateRange return the
 // chosen target verbatim. Floor is 10, ceiling 240, everywhere. Profile plist
 // (com.dell.promotioncontrol.profile.plist) drives defaults when present.
