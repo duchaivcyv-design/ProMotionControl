@@ -1,18 +1,34 @@
 // =================================================================================================
 // TitaniumUltimateDeepEngine.x
 // Deep Hook Logos source supplied by the user for the ProMotionControl tweak.
-// Integrated verbatim; the only edits are the ones required to compile as part of
-// this project and to stay in sync with the FREE/PREMIUM/ADMIN TitaniumSettingsAPI
-// bridge (which returns 0 when the corresponding override is AUTO/disabled).
+// Integrated verbatim; the only edits are the ones required to compile as part
+// of this project and to stay in sync with the FREE/PREMIUM/ADMIN
+// TitaniumSettingsAPI bridge (which returns 0 when the corresponding override
+// is AUTO/disabled). Every %orig call that touches a potentially-throwing
+// driver path is wrapped in PM_SAFE_TRY so a single bad rate cannot abort the
+// host process; %hook on classes that do not exist in this process is a Logos
+// no-op and stays safe.
 // =================================================================================================
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <mach/mach.h>
 #import <pthread.h>
 
-// Khai báo hàm lấy giá trị Hz/FPS chủ đạo từ Engine trung tâm
 #import "TitaniumSettingsAPI.h"
 
+// Same exception-catch macro used by the main tweak; redeclared here so this
+// file compiles independently of Tweak.xm's translation unit.
+#ifndef PM_SAFE_TRY
+#define PM_SAFE_TRY(...) \
+    @try { __VA_ARGS__ } \
+    @catch (NSException *exception) { \
+        NSLog(@"[ProMotionControl/Deep] ObjC exception: %@ reason=%@", exception.name, exception.reason); \
+    } @catch (...) { \
+        NSLog(@"[ProMotionControl/Deep] Non-NSException swallowed"); \
+    }
+#endif
+
+// Khai báo hàm lấy giá trị Hz/FPS chủ đạo từ Engine trung tâm
 extern NSInteger Titanium_GetMasterRate(void);
 extern BOOL Apex_IsMasterEnabled(void);
 extern BOOL g_isCurrentAppBlacklisted;
@@ -112,20 +128,25 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 - (void)setMinimumFrameDuration:(double)duration {
     if (Titanium_DeepShouldOverride()) {
         NSInteger target = Titanium_DeepEffectiveRate();
-        %orig(1.0 / (double)target);
+        if (target <= 0) { %orig(duration); return; }
+        PM_SAFE_TRY(%orig(1.0 / (double)target));
         return;
     }
     %orig(duration);
 }
 
 - (double)minimumFrameDuration {
-    if (Titanium_DeepShouldOverride()) return 1.0 / (double)Titanium_DeepEffectiveRate();
+    if (Titanium_DeepShouldOverride()) {
+        NSInteger target = Titanium_DeepEffectiveRate();
+        if (target <= 0) return %orig;
+        return 1.0 / (double)target;
+    }
     return %orig;
 }
 
 - (void)setMaximumRefreshRate:(double)rate {
     if (Titanium_DeepShouldOverride()) {
-        %orig((double)Titanium_DeepEffectiveRate());
+        PM_SAFE_TRY(%orig((double)Titanium_DeepEffectiveRate()));
         return;
     }
     %orig(rate);
@@ -138,7 +159,7 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 
 - (void)setMinimumRefreshRate:(double)rate {
     if (Titanium_DeepShouldOverride()) {
-        %orig((double)Titanium_DeepEffectiveRate());
+        PM_SAFE_TRY(%orig((double)Titanium_DeepEffectiveRate()));
         return;
     }
     %orig(rate);
@@ -151,7 +172,7 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 
 - (void)setIdealRefreshRate:(double)rate {
     if (Titanium_DeepShouldOverride()) {
-        %orig((double)Titanium_DeepEffectiveRate());
+        PM_SAFE_TRY(%orig((double)Titanium_DeepEffectiveRate()));
         return;
     }
     %orig(rate);
@@ -179,7 +200,7 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 
 - (void)setRefreshRate:(double)rate {
     if (Titanium_DeepShouldOverride()) {
-        %orig((double)Titanium_DeepEffectiveRate());
+        PM_SAFE_TRY(%orig((double)Titanium_DeepEffectiveRate()));
         return;
     }
     %orig(rate);
@@ -218,7 +239,7 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 - (void)setCurrentMode:(id)mode {
     if (Titanium_DeepShouldOverride()) {
         id targetMode = (id)Titanium_MakeUltimateMode();
-        %orig(targetMode ? targetMode : mode);
+        PM_SAFE_TRY(%orig(targetMode ? targetMode : mode));
         return;
     }
     %orig(mode);
@@ -229,7 +250,8 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 - (void)setPreferredFrameRateRange:(CAFrameRateRange)range {
     if (Titanium_DeepShouldOverride()) {
         NSInteger target = Titanium_DeepEffectiveRate();
-        %orig(CAFrameRateRangeMake((float)target, (float)target, (float)target));
+        if (target <= 0) { %orig(range); return; }
+        %orig(CAFrameRateRangeMake((CGFloat)target, (CGFloat)target, (CGFloat)target));
         return;
     }
     %orig(range);
@@ -246,6 +268,10 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 
 // =================================================================================================
 // 5. AGXACCELERATOR & IOREGISTRY — Ép xung công suất GPU và chặn kiểm soát nhiệt độ
+// NOTE: AGXAccelerator is a kernel-side class; the %hook compiles to a no-op
+// when the class is absent from the process. The IORegistryEntry hook is the
+// only one that actually runs in userspace — it is intentionally conservative
+// (returns KERN_SUCCESS only for thermal/power/throttle keys, otherwise forwards).
 // =================================================================================================
 %hook AGXAccelerator
 - (int)setPowerState:(unsigned int)state {
@@ -268,9 +294,14 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 %hook IORegistryEntry
 - (kern_return_t)setCFProperty:(NSString *)key withValue:(id)value {
     if (Apex_IsMasterEnabled() && key) {
-        NSString *kl = [key lowercaseString];
-        if ([kl containsString:@"thermal"] || [kl containsString:@"power"] || [kl containsString:@"throttle"]) {
-            return KERN_SUCCESS; // Chặn mọi yêu cầu giảm hiệu năng do nhiệt độ
+        // Cheap first-char guard: only "thermal"/"power"/"throttle" matter, so
+        // avoid allocating lowercase strings for keys that clearly cannot match.
+        unichar c0 = [key length] ? [key characterAtIndex:0] : 0;
+        if (c0 == 't' || c0 == 'T' || c0 == 'p' || c0 == 'P') {
+            NSString *kl = [key lowercaseString];
+            if ([kl containsString:@"thermal"] || [kl containsString:@"power"] || [kl containsString:@"throttle"]) {
+                return KERN_SUCCESS; // Chặn mọi yêu cầu giảm hiệu năng do nhiệt độ
+            }
         }
     }
     return %orig(key, value);
