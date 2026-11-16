@@ -35,7 +35,7 @@ static void PMShowTypingIntro(UIWindow *window) {
 
     NSString *appVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     if (![appVersion isKindOfClass:[NSString class]] || appVersion.length == 0) appVersion = @"5.8.48";
-    NSString *fullText = [NSString stringWithFormat:@"ProMotion Control\nVersion %@t\nTác giả: Nguyễn Minh Hải, Taojb", appVersion];
+    NSString *fullText = [NSString stringWithFormat:@"ProMotion Control\nVersion %@t\nTác giả: TaoJB\nMã nguồn: Nguyễn Minh Hải ( chờ ngày quay trở lại )", appVersion];
     __block NSUInteger position = 0;
     __block void (^typeNext)(void) = nil;
     __weak UILabel *weakBrand = brand;
