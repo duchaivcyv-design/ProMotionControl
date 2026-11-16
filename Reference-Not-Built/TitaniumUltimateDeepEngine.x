@@ -8,13 +8,28 @@
 // driver path is wrapped in PM_SAFE_TRY so a single bad rate cannot abort the
 // host process; %hook on classes that do not exist in this process is a Logos
 // no-op and stays safe.
+//
+// 8.4.1t integration note: `#import "TitaniumSettingsAPI.h"` removed. The three
+// bridge externs (Titanium_GetMasterRate, Apex_IsMasterEnabled,
+// g_isCurrentAppBlacklisted) are declared inline below. All three symbols are
+// defined in TitaniumSettingsAPI.x — the linker resolves them at dylib load.
+// No other change. File compiles and links standalone against the existing 6-file
+// build without touching any header.
 // =================================================================================================
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <mach/mach.h>
 #import <pthread.h>
 
-#import "TitaniumSettingsAPI.h"
+// --- Bridge externs, inlined (was: #import "TitaniumSettingsAPI.h") ---------
+// Titanium_GetMasterRate: returns the selected master rate (10..244), or 0
+// when the active tier has no numeric Hz selected (AUTO) / runtime inactive.
+// Apex_IsMasterEnabled: YES only when runtime is fully active in this process.
+// g_isCurrentAppBlacklisted: per-process opt-out, default NO.
+extern NSInteger Titanium_GetMasterRate(void);
+extern BOOL Apex_IsMasterEnabled(void);
+extern BOOL g_isCurrentAppBlacklisted;
+// ---------------------------------------------------------------------------
 
 // Same exception-catch macro used by the main tweak; redeclared here so this
 // file compiles independently of Tweak.xm's translation unit.
@@ -27,11 +42,6 @@
         NSLog(@"[ProMotionControl/Deep] Non-NSException swallowed"); \
     }
 #endif
-
-// Khai báo hàm lấy giá trị Hz/FPS chủ đạo từ Engine trung tâm
-extern NSInteger Titanium_GetMasterRate(void);
-extern BOOL Apex_IsMasterEnabled(void);
-extern BOOL g_isCurrentAppBlacklisted;
 
 // Bridge integration: Titanium_GetMasterRate() returns 0 when the active tier has
 // no numeric Hz selected (AUTO). Feeding 0 into 1.0/rate produces +inf frame
