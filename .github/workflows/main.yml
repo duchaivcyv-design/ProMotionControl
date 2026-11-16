@@ -68,19 +68,26 @@ jobs:
       - name: download sdks
         if: steps.cache-sdks.outputs.cache-hit != 'true'
         run: |
-          # Đảm bảo thư mục theos/sdks tồn tại và có quyền ghi
+          # Đảm bảo thư mục theos/sdks tồn tại
           mkdir -p "$GITHUB_WORKSPACE/theos/sdks"
-          chmod -R 777 "$GITHUB_WORKSPACE/theos/sdks" # Cấp quyền tối đa để đảm bảo không bị lỗi quyền
+          # Cấp quyền tối đa cho thư mục theos và các thư mục con để đảm bảo không bị lỗi quyền khi ghi/đọc
+          chmod -R 777 "$GITHUB_WORKSPACE/theos" 
           
+          echo "Bắt đầu tải và giải nén SDK..."
           curl -LO https://github.com/theos/sdks/archive/master.zip
           unzip -q master.zip -d sdks_temp # Giải nén vào một thư mục tạm biệt lập
           
-          # Di chuyển các SDK một cách an toàn
-          # Sử dụng find và mv để chỉ di chuyển các thư mục .sdk
-          find sdks_temp/sdks-master -maxdepth 1 -type d -name "*.sdk" -exec mv {} "$GITHUB_WORKSPACE/theos/sdks/" \;
+          echo "Di chuyển các SDK vào thư mục đích bằng cp -R..."
+          # Sử dụng cp -R thay vì mv để tránh lỗi symlink/permission khi di chuyển các file đặc biệt
+          # Sau đó xóa bản gốc trong thư mục tạm
+          find sdks_temp/sdks-master -maxdepth 1 -type d -name "*.sdk" -exec cp -R {} "$GITHUB_WORKSPACE/theos/sdks/" \;
           
-          # Dọn dẹp các tệp tạm
+          echo "Dọn dẹp các tệp tạm..."
           rm -rf master.zip sdks_temp
+          
+          echo "Kiểm tra quyền hạn và nội dung của theos/sdks..."
+          ls -la "$GITHUB_WORKSPACE/theos/sdks" # Hiển thị nội dung và quyền hạn để debug
+          chmod -R 755 "$GITHUB_WORKSPACE/theos/sdks" # Đặt lại quyền chuẩn sau khi di chuyển
 
       - name: set THEOS env var
         run: echo "THEOS=$GITHUB_WORKSPACE/theos" >> $GITHUB_ENV
