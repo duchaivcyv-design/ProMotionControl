@@ -19,16 +19,16 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ProMotionControl
 
-# Explicit file list — NO wildcards. Theos has a known bug when wildcarding .x
-# files inside subdirectories (creates .x.m in one path, tries to compile from
-# another). Every .x file must live at the project root.
+# Explicit file list — NO wildcards. Theos 4.x has a known bug when wildcarding
+# .x files inside subdirectories; every .x file lives at project root.
+# Filenames below match the repo exactly. If you rename a file, update this list.
 ProMotionControl_FILES = Tweak.x \
                          TitaniumCoreBridge.m \
                          TitaniumBackgroundContinuity.m \
                          TitaniumServerFreeEngine.x \
                          TitaniumServerPremiumEngine.x \
                          TitaniumServerAdminEngine.x \
-                         TitaniumServerTierSupreme.x \
+                         TitaniumServerTierSupremeEngine.x \
                          TitaniumUltimateDeepEngine.x \
                          TitaniumHardwareOverdriveGuard.x \
                          TitaniumApexSupremeUltimateEngine.x \
