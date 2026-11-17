@@ -4,28 +4,14 @@
 // Integrated verbatim; the only edits are the ones required to compile as part
 // of this project and to stay in sync with the FREE/PREMIUM/ADMIN
 // TitaniumSettingsAPI bridge (which returns 0 when the corresponding override
-// is AUTO/disabled). Every %orig call that touches a potentially-throwing
-// driver path is wrapped in PM_SAFE_TRY so a single bad rate cannot abort the
-// host process; %hook on classes that do not exist in this process is a Logos
-// no-op and stays safe.
-//
-// 8.4.1t integration note: `#import "TitaniumSettingsAPI.h"` removed. The three
-// bridge externs (Titanium_GetMasterRate, Apex_IsMasterEnabled,
-// g_isCurrentAppBlacklisted) are declared inline below. All three symbols are
-// defined in TitaniumSettingsAPI.x — the linker resolves them at dylib load.
-// No other change. File compiles and links standalone against the existing 6-file
-// build without touching any header.
+// is AUTO/disabled).
 // =================================================================================================
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <mach/mach.h>
 #import <pthread.h>
 
-// --- Bridge externs, inlined (was: #import "TitaniumSettingsAPI.h") ---------
-// Titanium_GetMasterRate: returns the selected master rate (10..244), or 0
-// when the active tier has no numeric Hz selected (AUTO) / runtime inactive.
-// Apex_IsMasterEnabled: YES only when runtime is fully active in this process.
-// g_isCurrentAppBlacklisted: per-process opt-out, default NO.
+// --- Bridge externs, inlined ------------------------------------------------
 extern NSInteger Titanium_GetMasterRate(void);
 extern BOOL Apex_IsMasterEnabled(void);
 extern BOOL g_isCurrentAppBlacklisted;
@@ -33,6 +19,8 @@ extern BOOL g_isCurrentAppBlacklisted;
 
 // Same exception-catch macro used by the main tweak; redeclared here so this
 // file compiles independently of Tweak.xm's translation unit.
+// NOTE: trailing semicolon is REQUIRED so call sites like PM_SAFE_TRY(%orig(...));
+// compile as a complete statement when %orig expands to a function call.
 #ifndef PM_SAFE_TRY
 #define PM_SAFE_TRY(...) \
     @try { __VA_ARGS__ } \
@@ -278,10 +266,6 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 
 // =================================================================================================
 // 5. AGXACCELERATOR & IOREGISTRY — Ép xung công suất GPU và chặn kiểm soát nhiệt độ
-// NOTE: AGXAccelerator is a kernel-side class; the %hook compiles to a no-op
-// when the class is absent from the process. The IORegistryEntry hook is the
-// only one that actually runs in userspace — it is intentionally conservative
-// (returns KERN_SUCCESS only for thermal/power/throttle keys, otherwise forwards).
 // =================================================================================================
 %hook AGXAccelerator
 - (int)setPowerState:(unsigned int)state {
