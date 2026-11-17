@@ -21,7 +21,7 @@ endif
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ProMotionControl
-ProMotionControl_FILES = Tweak.x TitaniumCoreBridge.m TitaniumBackgroundContinuity.m TitaniumServerFreeEngine.x TitaniumServerPremiumEngine.x TitaniumServerAdminEngine.x
+ProMotionControl_FILES = Tweak.x TitaniumCoreBridge.m TitaniumBackgroundContinuity.m TitaniumServerFreeEngine.x TitaniumServerPremiumEngine.x TitaniumServerAdminEngine.x Reference/*.x
 
 # IOKit is required — Tweak.x's PMOpenMainFramebuffer / PMAttemptDriverOverride
 # call IOObjectRelease() and IOServiceGetMatchingService(kIOMasterPortDefault, ...)
