@@ -25,6 +25,8 @@
 #import <dlfcn.h>
 #import <CoreFoundation/CoreFoundation.h>
 
+@import Darwin.os.lock;
+
 // ============================================================================
 // Private framework symbols (IOMobileFramebuffer, IOKit)
 // ============================================================================
