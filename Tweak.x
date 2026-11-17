@@ -9,7 +9,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
-#import <IOSurface/IOSurface.h>
 #import <mach/mach.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOMessage.h>
