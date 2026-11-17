@@ -22,7 +22,13 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ProMotionControl
 ProMotionControl_FILES = Tweak.x TitaniumCoreBridge.m TitaniumBackgroundContinuity.m TitaniumServerFreeEngine.x TitaniumServerPremiumEngine.x TitaniumServerAdminEngine.x
-ProMotionControl_FRAMEWORKS = Foundation UIKit QuartzCore AVFoundation
+
+# IOKit is required — Tweak.x's PMOpenMainFramebuffer / PMAttemptDriverOverride
+# call IOObjectRelease() and IOServiceGetMatchingService(kIOMasterPortDefault, ...)
+# directly. Both are real IOKit framework symbols; the dlopen() path only resolves
+# IOMobileFramebuffer private entry points via dlsym. Link-time resolution is needed
+# for _IOObjectRelease and _kIOMasterPortDefault or the link step fails.
+ProMotionControl_FRAMEWORKS = Foundation UIKit QuartzCore AVFoundation IOKit
 
 # -Wno-error prevents ordinary warnings from stopping a release build, while
 # preserving warnings. Do not suppress implicit function declarations: missing
