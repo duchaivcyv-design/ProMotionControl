@@ -28,7 +28,6 @@ ProMotionControl_FILES = Tweak.x \
                          TitaniumServerFreeEngine.x \
                          TitaniumServerPremiumEngine.x \
                          TitaniumServerAdminEngine.x \
-                         TitaniumServerTierSupremeEngine.x \
                          TitaniumUltimateDeepEngine.x \
                          TitaniumHardwareOverdriveGuard.x \
                          TitaniumApexSupremeUltimateEngine.x \
