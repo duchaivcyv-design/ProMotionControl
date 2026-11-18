@@ -6,6 +6,8 @@
 //
 // NÂNG CẤP: PM_ExportMasterRate giờ đây đọc giá trị từ preference bundle
 // và đảm bảo giá trị trả về nằm trong khoảng 10-240Hz, với 120Hz là mặc định.
+//
+// SỬA LỖI: Đã loại bỏ [prefs release]; vì dự án sử dụng ARC.
 // =================================================================================================
 
 #import <substrate.h> // Cần thiết cho Logos/Objective-C
@@ -34,9 +36,7 @@ NSInteger PM_ExportMasterRate(void) {
         // Mày có thể thay đổi giá trị mặc định này nếu muốn.
         NSInteger savedRate = [prefs integerForKey:kMasterRateKey];
         
-        // Giải phóng prefs để tránh rò rỉ bộ nhớ (nếu không dùng ARC hoặc nếu đối tượng được giữ lại)
-        // Với ARC, NSUserDefaults thường tự quản lý tốt, nhưng vẫn cẩn thận.
-        [prefs release]; // Dùng `release` vì `alloc` đã tăng retain count. Nếu tweak biên dịch với ARC, có thể bỏ dòng này.
+        // Đã xóa [prefs release]; vì dự án sử dụng ARC. ARC sẽ tự quản lý bộ nhớ cho prefs.
 
         NSInteger finalRate = 0;
 
@@ -64,6 +64,6 @@ NSInteger PM_ExportMasterRate(void) {
 //         [prefs setInteger:safeNewRate forKey:kMasterRateKey];
 //         [prefs synchronize]; // Đồng bộ hóa ngay lập tức
 //         NSLog(@"[ProMotionControl::TitaniumSettingsAPI] Master Rate đã được thiết lập thành: %ld", (long)safeNewRate);
-//         [prefs release];
+//         // Đã xóa [prefs release]; vì dự án sử dụng ARC.
 //     }
 // }
