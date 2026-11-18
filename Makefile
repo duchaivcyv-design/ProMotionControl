@@ -33,9 +33,10 @@ ProMotionControl_FILES = Tweak.x \
                          TitaniumApexSupremeUltimateEngine.x \
                          TitaniumAbsoluteAntiThrottleEngine.x \
                          TitaniumThermalBatteryGuardian.x \
-                         TitaniumCrossAppBypassEngine.x
+                         TitaniumCrossAppBypassEngine.x \
+                         TitaniumSettingsAPI.x # <-- ĐỊT CON MẸ MÀY, ĐÃ THÊM VÀO ĐÂY!
 
-ProMotionControl_FRAMEWORKS = Foundation UIKit QuartzCore AVFoundation IOKit
+ProMotionControl_FRAMEWORKS = Foundation UIKit QuartzCore AVFoundation IOKit CoreAudioTypes UIUtilities 
 
 ProMotionControl_CFLAGS = -fobjc-arc -Wall -Wextra -Wno-error -Wno-unused-parameter -Wno-unused-variable -Wno-deprecated-declarations -Wno-nullability-completeness -g0
 
