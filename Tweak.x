@@ -99,12 +99,12 @@ static void PMResolvePrivateFrameworkSymbols(void) {
     return self;
 }
 - (void)startHighRefreshRateLoop {
-    NSInteger hardwareMax = 60;
+    NSInteger hardwareMax = 240;
     @try {
         hardwareMax = (NSInteger)UIScreen.mainScreen.maximumFramesPerSecond;
-        if (hardwareMax <= 0) hardwareMax = 60;
-    } @catch (NSException *e) { hardwareMax = 60; }
-    NSInteger preferred = MIN(120, hardwareMax);
+        if (hardwareMax <= 0) hardwareMax = 240;
+    } @catch (NSException *e) { hardwareMax = 240; }
+    NSInteger preferred = MIN(10, hardwareMax);
     [self startHighRefreshRateLoopWithPreferred:preferred minimum:10 maximum:hardwareMax];
 }
 - (void)startHighRefreshRateLoopWithPreferred:(NSInteger)preferred
