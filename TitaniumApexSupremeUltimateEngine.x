@@ -50,6 +50,7 @@ extern volatile NSInteger Titanium_SharedRealThermalState;
 // never divide by zero or advertise a 0 Hz mode. It only overrides on 10...244.
 static inline NSInteger Titanium_SupremeEffectiveRate(void) {
     NSInteger rate = Titanium_GetMasterRate();
+    // Đảm bảo rate > 0 để tránh các phép chia cho 0 và giá trị không xác định
     return (rate >= 10 && rate <= 244) ? rate : 0;
 }
 
@@ -60,12 +61,13 @@ static inline BOOL Titanium_SupremeShouldOverride(void) {
 // Same exception-catch macro used by the main tweak; redeclared here so this
 // file compiles independently of Tweak.xm's translation unit.
 #ifndef PM_SAFE_TRY
+// SỬA LỖI: Thêm dấu chấm phẩy vào sau __VA_ARGS__ để đảm bảo cú pháp hợp lệ sau khi mở rộng macro.
 #define PM_SAFE_TRY(...) \
-    @try { __VA_ARGS__ } \
+    @try { __VA_ARGS__; } \
     @catch (NSException *exception) { \
         NSLog(@"[ProMotionControl/Supreme] ObjC exception: %@ reason=%@", exception.name, exception.reason); \
     } @catch (...) { \
-        NSLog(@"[ProMotionControl/Supreme] Non-NSException swallowed"); \
+        NSLog(@"[ProMotionControl/Supreme] Non-NSException swallowed (unknown type)"); \
     }
 #endif
 
@@ -76,7 +78,7 @@ static inline BOOL Titanium_SupremeShouldOverride(void) {
 static inline NSProcessInfoThermalState Titanium_RealThermalStateSnapshot(void) {
     NSInteger v = Titanium_SharedRealThermalState;
     if (v < 0) v = 0;
-    if (v > 3) v = 3;
+    if (v > 3) v = 3; // NSProcessInfoThermalStateCritical là 3
     return (NSProcessInfoThermalState)v;
 }
 
@@ -190,7 +192,10 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 - (void)setMinimumFrameDuration:(double)duration {
     if (Titanium_SupremeShouldOverride()) {
         NSInteger target = Titanium_SupremeEffectiveRate();
-        if (target <= 0) { %orig(duration); return; }
+        if (target <= 0) { // Đảm bảo target hợp lệ trước khi chia
+            PM_SAFE_TRY(%orig(duration)); // Fallback về giá trị ban đầu nếu target không hợp lệ
+            return;
+        }
         PM_SAFE_TRY(%orig(1.0 / (double)target));
         return;
     }
@@ -280,7 +285,12 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 - (void)setPreferredFPS:(NSInteger)fps {
     if (Titanium_SupremeShouldOverride()) {
-        %orig(Titanium_SupremeEffectiveRate());
+        NSInteger effectiveRate = Titanium_SupremeEffectiveRate();
+        if (effectiveRate > 0) { // Đảm bảo effectiveRate hợp lệ
+            %orig(effectiveRate);
+        } else {
+            %orig(fps); // Fallback nếu không hợp lệ
+        }
         return;
     }
     %orig(fps);
@@ -317,7 +327,10 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 - (void)setPreferredFrameRateRange:(CAFrameRateRange)range {
     if (Titanium_SupremeShouldOverride()) {
         NSInteger target = Titanium_SupremeEffectiveRate();
-        if (target <= 0) { %orig(range); return; }
+        if (target <= 0) { // Đảm bảo target hợp lệ
+            %orig(range);
+            return;
+        }
         %orig(CAFrameRateRangeMake((CGFloat)target, (CGFloat)target, (CGFloat)target));
         return;
     }
@@ -326,7 +339,12 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 - (void)setPreferredFramesPerSecond:(NSInteger)fps {
     if (Titanium_SupremeShouldOverride()) {
-        %orig(Titanium_SupremeEffectiveRate());
+        NSInteger effectiveRate = Titanium_SupremeEffectiveRate();
+        if (effectiveRate > 0) { // Đảm bảo effectiveRate hợp lệ
+            %orig(effectiveRate);
+        } else {
+            %orig(fps); // Fallback nếu không hợp lệ
+        }
         return;
     }
     %orig(fps);
@@ -344,7 +362,7 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 %hook AGXAccelerator
 - (int)setPowerState:(unsigned int)state {
     if (Apex_IsMasterEnabled()) {
-        %orig(1); // Ép mức điện năng GPU tối đa, không bị bóp xung
+        PM_SAFE_TRY(%orig(1)); // Ép mức điện năng GPU tối đa, không bị bóp xung
         return 1;
     }
     return %orig(state);
@@ -352,7 +370,7 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 
 - (void)setPerfState:(unsigned int)state {
     if (Apex_IsMasterEnabled()) {
-        %orig(1); // Ép hiệu năng đồ họa đỉnh cao
+        PM_SAFE_TRY(%orig(1)); // Ép hiệu năng đồ họa đỉnh cao
         return;
     }
     %orig(state);
@@ -378,6 +396,8 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 // softened value, so `state >= Critical` never fired.
 %hook IORegistryEntry
 - (kern_return_t)setCFProperty:(NSString *)key withValue:(id)value {
+    // Khởi tạo giá trị trả về mặc định là FAILURE, hoặc giá trị từ %orig nếu không bị chặn.
+    kern_return_t result = KERN_FAILURE;
     if (Apex_IsMasterEnabled() && Titanium_Supreme_KeyIsThrottleRelated(key)) {
         NSProcessInfoThermalState realState = Titanium_RealThermalStateSnapshot();
         if (realState >= NSProcessInfoThermalStateCritical) {
@@ -385,12 +405,20 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
             // safety valve in the entire Supreme chain — it depends on the
             // shared global being populated by Overdrive's hook.
             NSLog(@"[ProMotionControl/Supreme] critical thermal (real) — permitting throttle");
-            PM_SAFE_TRY(return %orig(key, value));
-            return KERN_SUCCESS; // fallback if %orig threw
+            // SỬA LỖI: Không dùng return trong PM_SAFE_TRY. Lưu kết quả vào biến và trả về.
+            PM_SAFE_TRY(result = %orig(key, value));
+            // Nếu %orig không ném ngoại lệ và hoàn thành, result sẽ được cập nhật.
+            // Nếu %orig ném ngoại lệ, PM_SAFE_TRY sẽ catch và result vẫn là KERN_FAILURE (hoặc giá trị cũ).
+            // Tuy nhiên, theo logic "permitting throttle", nếu %orig thành công, nó sẽ trả về KERN_SUCCESS.
+            // Để đảm bảo logic "fallback if %orig threw" hoạt động, chúng ta phải giữ KERN_SUCCESS nếu %orig không có lỗi.
+            // Nhưng vì mục tiêu là "permitting throttle" và giá trị từ %orig là quan trọng, ta sẽ trả về result trực tiếp.
+            return result; // Trả về kết quả từ %orig
         }
         return KERN_SUCCESS; // Chặn toàn bộ lệnh bóp hiệu năng thông thường khi sạc hoặc chạy app nền
     }
-    return %orig(key, value);
+    // SỬA LỖI: Không dùng return trong PM_SAFE_TRY. Lưu kết quả vào biến và trả về.
+    PM_SAFE_TRY(result = %orig(key, value));
+    return result; // Trả về kết quả từ %orig
 }
 %end
 
