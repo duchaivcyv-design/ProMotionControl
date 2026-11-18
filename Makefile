@@ -34,9 +34,9 @@ ProMotionControl_FILES = Tweak.x \
                          TitaniumAbsoluteAntiThrottleEngine.x \
                          TitaniumThermalBatteryGuardian.x \
                          TitaniumCrossAppBypassEngine.x \
-                         TitaniumSettingsAPI.x # <-- ĐỊT CON MẸ MÀY, ĐÃ THÊM VÀO ĐÂY!
+                         TitaniumSettingsAPI.x # <-- Đã thêm file API vào đây
 
-ProMotionControl_FRAMEWORKS = Foundation UIKit QuartzCore AVFoundation IOKit CoreAudioTypes UIUtilities 
+ProMotionControl_FRAMEWORKS = Foundation UIKit QuartzCore AVFoundation IOKit CoreAudioTypes UIUtilities # <-- ĐỊT MẸ MÀY, BỔ SUNG HAI FRAMEWORK BỊ THIẾU VÀO ĐÂY!
 
 ProMotionControl_CFLAGS = -fobjc-arc -Wall -Wextra -Wno-error -Wno-unused-parameter -Wno-unused-variable -Wno-deprecated-declarations -Wno-nullability-completeness -g0
 
