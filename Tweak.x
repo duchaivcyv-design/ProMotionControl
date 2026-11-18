@@ -27,6 +27,11 @@
 
 @import Darwin.os.lock;
 
+// Thêm các headers mới cho các module đã được tạo/chỉnh sửa
+#import "TitaniumSettingsAPI.h"
+#import "TitaniumServerTierSupport.h"
+#import "TitaniumHardwareAdapter.h" // Import module thao túng phần cứng
+
 // ============================================================================
 // Private framework symbols (IOMobileFramebuffer, IOKit)
 // ============================================================================
@@ -67,7 +72,7 @@ static void PMResolvePrivateFrameworkSymbols(void) {
 }
 
 // ============================================================================
-// PMFrameOptimizer
+// PMFrameOptimizer - Kept as is from user's provided code.
 // ============================================================================
 @interface PMFrameOptimizer : NSObject
 @property (nonatomic, strong) CADisplayLink *displayLink;
@@ -256,7 +261,7 @@ static void PMLogCritical(NSString *format, ...) {
 }
 __attribute__((visibility("default"), used))
 uint64_t PMControlTweakDroppedLogs(void) {
-    return atomic_load_explicit(&g_PMLogDropped, memory_order_acquire);
+    return atomic_load_explicit(&g_PMMetrics.droppedLogs, memory_order_acquire); // Sửa lỗi tên biến metric
 }
 
 // ============================================================================
@@ -297,6 +302,7 @@ typedef struct PMMetrics {
     atomic_uint_fast64_t panelOverrideFailures;
     atomic_uint_fast64_t spoofGetterHits;
     atomic_uint_fast64_t profilePlistLoads;   // 8.0.1t
+    atomic_uint_fast64_t droppedLogs; // Sửa lỗi: Thêm biến droppedLogs vào struct
 } PMMetrics;
 static PMMetrics g_PMMetrics = {0};
 #define PM_METRIC_BUMP(field) \
@@ -340,6 +346,7 @@ uint64_t PMControlTweakMetric(const char *name) {
     if ([key isEqualToString:@"panelOverrideFailures"]) return atomic_load_explicit(&g_PMMetrics.panelOverrideFailures, memory_order_acquire);
     if ([key isEqualToString:@"spoofGetterHits"]) return atomic_load_explicit(&g_PMMetrics.spoofGetterHits, memory_order_acquire);
     if ([key isEqualToString:@"profilePlistLoads"]) return atomic_load_explicit(&g_PMMetrics.profilePlistLoads, memory_order_acquire);
+    if ([key isEqualToString:@"droppedLogs"]) return atomic_load_explicit(&g_PMMetrics.droppedLogs, memory_order_acquire); // Sửa lỗi
     return 0;
 }
 
@@ -470,7 +477,11 @@ static NSDictionary *PMProfilePolicyOverrides(NSString *profile) {
             @"DriverOverride": @YES,
             @"AggressiveReassert": @YES,
             @"ScrollShield": @YES,
-            @"ForegroundOnly": @NO
+            @"ForegroundOnly": @NO,
+            @"ForceMaxDisplayRate": @YES,      // Kích hoạt ForceMaxDisplayRate cho profile Ultra
+            @"DisableThermalThrottle": @YES,   // Kích hoạt DisableThermalThrottle cho profile Ultra
+            @"OverclockCPU": @YES,             // Kích hoạt OverclockCPU cho profile Ultra
+            @"OverclockGPU": @YES              // Kích hoạt OverclockGPU cho profile Ultra
         };
     }
     if ([p isEqualToString:@"high"]) {
@@ -481,7 +492,11 @@ static NSDictionary *PMProfilePolicyOverrides(NSString *profile) {
             @"DriverOverride": @YES,
             @"AggressiveReassert": @NO,
             @"ScrollShield": @YES,
-            @"ForegroundOnly": @YES
+            @"ForegroundOnly": @YES,
+            @"ForceMaxDisplayRate": @YES,      // Kích hoạt ForceMaxDisplayRate cho profile High
+            @"DisableThermalThrottle": @NO,
+            @"OverclockCPU": @NO,
+            @"OverclockGPU": @NO
         };
     }
     if ([p isEqualToString:@"balanced"]) {
@@ -491,7 +506,11 @@ static NSDictionary *PMProfilePolicyOverrides(NSString *profile) {
             @"SpoofScreenMax": @YES,
             @"DriverOverride": @NO,
             @"ScrollShield": @YES,
-            @"ForegroundOnly": @YES
+            @"ForegroundOnly": @YES,
+            @"ForceMaxDisplayRate": @NO,
+            @"DisableThermalThrottle": @NO,
+            @"OverclockCPU": @NO,
+            @"OverclockGPU": @NO
         };
     }
     if ([p isEqualToString:@"battery"]) {
@@ -501,7 +520,11 @@ static NSDictionary *PMProfilePolicyOverrides(NSString *profile) {
             @"SpoofScreenMax": @NO,
             @"DriverOverride": @NO,
             @"ScrollShield": @NO,
-            @"ForegroundOnly": @YES
+            @"ForegroundOnly": @YES,
+            @"ForceMaxDisplayRate": @NO,
+            @"DisableThermalThrottle": @NO,
+            @"OverclockCPU": @NO,
+            @"OverclockGPU": @NO
         };
     }
     return @{};
@@ -564,7 +587,9 @@ static NSDictionary *PMLoadProfilePlist(void) {
             @"AggressiveReassert", @"ScrollShield", @"ForegroundOnly",
             @"HardLock", @"LockedTarget", @"Enabled",
             @"AdvancedDisplayEnforcement", @"FramePacing",
-            @"ZeroFluff", @"DriverTargetRate"
+            @"ZeroFluff", @"DriverTargetRate",
+            // Thêm các cờ mới
+            @"ForceMaxDisplayRate", @"DisableThermalThrottle", @"OverclockCPU", @"OverclockGPU"
         ];
         for (NSString *key in passthroughKeys) {
             id v = raw[key];
@@ -614,6 +639,11 @@ static volatile int32_t g_SpoofScreenMax = 1;
 static volatile int32_t g_SpoofGetters = 1;
 static volatile int32_t g_DriverWriteSucceeded = 0;
 static volatile int32_t g_DriverTargetRate = 240;
+static volatile int32_t g_ForceMaxDisplayRate = 0;      // Biến trạng thái cho Force Max Display Rate
+static volatile int32_t g_DisableThermalThrottle = 0;   // Biến trạng thái cho Disable Thermal Throttle
+static volatile int32_t g_OverclockCPU = 0;             // Biến trạng thái cho Overclock CPU
+static volatile int32_t g_OverclockGPU = 0;             // Biến trạng thái cho Overclock GPU
+
 static BOOL g_IsAppEligible = NO;
 static BOOL g_AppEligibilityChecked = NO;
 static volatile int32_t g_PreferencesLoaded = 0;
@@ -703,7 +733,11 @@ enum {
     PMPolicyPanelOverride = 1 << 13,
     PMPolicySpoofScreenMax = 1 << 14,
     PMPolicyZeroFluff = 1 << 15,
-    PMPolicySpoofGetters = 1 << 16
+    PMPolicySpoofGetters = 1 << 16,
+    PMPolicyForceMaxDisplayRate = 1 << 17,    // Cờ cho Force Max Display Rate
+    PMPolicyDisableThermalThrottle = 1 << 18, // Cờ cho Disable Thermal Throttle
+    PMPolicyOverclockCPU = 1 << 19,           // Cờ cho Overclock CPU
+    PMPolicyOverclockGPU = 1 << 20            // Cờ cho Overclock GPU
 };
 
 static inline BOOL PMPolicyEnabled(int32_t flag) {
@@ -730,7 +764,7 @@ static NSInteger PMReadConfiguredRate(NSDictionary *prefs, NSString *modeKey, NS
     } else if (mode > 0) {
         result = mode;
     }
-    return MIN(MAX(result, 10), 244);
+    return MIN(MAX(result, 10), 240);
 }
 static BOOL PMPreferenceBoolean(NSDictionary *prefs, NSString *key, BOOL fallback) {
     id value = prefs[key];
@@ -765,7 +799,9 @@ static NSDictionary *PMEffectivePreferencesForCurrentApp(NSDictionary *basePrefe
         @"LockedTarget", @"LockedOverrideThermal",
         @"DriverOverride", @"PanelOverride", @"SpoofScreenMax",
         @"DriverTargetRate", @"ZeroFluff",
-        @"ForceMinimum", @"ForceMaximum", @"SpoofGetters"
+        @"ForceMinimum", @"ForceMaximum", @"SpoofGetters",
+        // Thêm các cờ mới
+        @"ForceMaxDisplayRate", @"DisableThermalThrottle", @"OverclockCPU", @"OverclockGPU"
     ];
     for (NSString *key in allowedKeys) {
         id profileValue = namedProfile[key];
@@ -887,6 +923,12 @@ static void PMLoadPreferencesSync(void) {
         BOOL driverOverride = NO, panelOverride = NO, spoofScreenMax = YES, zeroFluff = NO;
         BOOL spoofGetters = YES;
 
+        // Các cờ mới cần đọc từ preferences
+        BOOL forceMaxDisplayRate = NO;
+        BOOL disableThermalThrottle = NO;
+        BOOL overclockCPU = NO;
+        BOOL overclockGPU = NO;
+
         switch (serverMode) {
             case 3: {
                 thermalGuard = PMPreferenceBoolean(basePrefs, @"LockedThermalCooldownEnabled", NO);
@@ -901,9 +943,14 @@ static void PMLoadPreferencesSync(void) {
                 panelOverride = PMPreferenceBoolean(basePrefs, @"LockedPanelOverride", YES);
                 zeroFluff = PMPreferenceBoolean(basePrefs, @"LockedZeroFluff", YES);
                 spoofGetters = PMPreferenceBoolean(basePrefs, @"LockedSpoofGetters", YES);
+                // Đọc các cờ mới cho chế độ LOCKED
+                forceMaxDisplayRate = PMPreferenceBoolean(basePrefs, @"LockedForceMaxDisplayRate", NO);
+                disableThermalThrottle = PMPreferenceBoolean(basePrefs, @"LockedDisableThermalThrottle", NO);
+                overclockCPU = PMPreferenceBoolean(basePrefs, @"LockedOverclockCPU", NO);
+                overclockGPU = PMPreferenceBoolean(basePrefs, @"LockedOverclockGPU", NO);
                 break;
             }
-            case 2: {
+            case 2: { // ADMIN
                 thermalGuard = PMPreferenceBoolean(basePrefs, @"AdminThermalCooldownEnabled", YES);
                 adaptiveCadence = PMPreferenceBoolean(basePrefs, @"AdminAdaptiveFramePacingEnabled", YES);
                 adminTitaniumRateAdapter = PMPreferenceBoolean(basePrefs, @"AdminTitaniumHardwareRateAdapterEnabled", YES);
@@ -915,22 +962,37 @@ static void PMLoadPreferencesSync(void) {
                 driverOverride = PMPreferenceBoolean(basePrefs, @"AdminDriverOverride", NO);
                 panelOverride = PMPreferenceBoolean(basePrefs, @"AdminPanelOverride", NO);
                 spoofGetters = PMPreferenceBoolean(basePrefs, @"AdminSpoofGetters", NO);
+                // Đọc các cờ mới cho chế độ ADMIN
+                forceMaxDisplayRate = PMPreferenceBoolean(prefs, @"ForceMaxDisplayRate", NO);
+                disableThermalThrottle = PMPreferenceBoolean(prefs, @"DisableThermalThrottle", NO);
+                overclockCPU = PMPreferenceBoolean(prefs, @"OverclockCPU", NO);
+                overclockGPU = PMPreferenceBoolean(prefs, @"OverclockGPU", NO);
                 break;
             }
-            case 1: {
+            case 1: { // PREMIUM
                 thermalGuard = PMPreferenceBoolean(basePrefs, @"PremiumThermalGuardEnabled", YES);
                 lowLatency = PMPreferenceBoolean(basePrefs, @"PremiumLowLatencyModeEnabled", YES);
                 premiumTier4Display = PMPreferenceBoolean(basePrefs, @"PremiumTier4DisplayPolicyEnabled", YES);
                 scrollShield = PMPreferenceBoolean(basePrefs, @"PremiumScrollShieldEnabled", YES);
                 forceMinimum = PMPreferenceBoolean(basePrefs, @"PremiumForceMinimum", NO);
                 spoofGetters = PMPreferenceBoolean(basePrefs, @"PremiumSpoofGetters", NO);
+                // Các cờ mới mặc định là NO cho PREMIUM
+                forceMaxDisplayRate = PMPreferenceBoolean(prefs, @"ForceMaxDisplayRate", NO);
+                disableThermalThrottle = PMPreferenceBoolean(prefs, @"DisableThermalThrottle", NO);
+                overclockCPU = PMPreferenceBoolean(prefs, @"OverclockCPU", NO);
+                overclockGPU = PMPreferenceBoolean(prefs, @"OverclockGPU", NO);
                 break;
             }
-            default: {
+            default: { // FREE
                 thermalGuard = PMPreferenceBoolean(basePrefs, @"FreeThermalGuardEnabled", YES);
                 adaptiveCadence = PMPreferenceBoolean(basePrefs, @"FreeAdaptiveCadenceEnabled", YES);
                 forceMinimum = PMPreferenceBoolean(basePrefs, @"FreeForceMinimum", NO);
                 spoofGetters = PMPreferenceBoolean(basePrefs, @"FreeSpoofGetters", NO);
+                // Các cờ mới mặc định là NO cho FREE
+                forceMaxDisplayRate = PMPreferenceBoolean(prefs, @"ForceMaxDisplayRate", NO);
+                disableThermalThrottle = PMPreferenceBoolean(prefs, @"DisableThermalThrottle", NO);
+                overclockCPU = PMPreferenceBoolean(prefs, @"OverclockCPU", NO);
+                overclockGPU = PMPreferenceBoolean(prefs, @"OverclockGPU", NO);
                 break;
             }
         }
@@ -938,6 +1000,10 @@ static void PMLoadPreferencesSync(void) {
         if (serverMode == 3) {
             forceMaximum = YES;
             spoofGetters = YES;
+            forceMaxDisplayRate = YES; // Kích hoạt mạnh nhất cho LOCKED
+            disableThermalThrottle = YES;
+            overclockCPU = YES;
+            overclockGPU = YES;
         }
 
         int32_t policyFlags = 0;
@@ -958,6 +1024,11 @@ static void PMLoadPreferencesSync(void) {
         if (spoofScreenMax) policyFlags |= PMPolicySpoofScreenMax;
         if (zeroFluff) policyFlags |= PMPolicyZeroFluff;
         if (spoofGetters) policyFlags |= PMPolicySpoofGetters;
+        if (forceMaxDisplayRate) policyFlags |= PMPolicyForceMaxDisplayRate;        // Ghi cờ vào policyFlags
+        if (disableThermalThrottle) policyFlags |= PMPolicyDisableThermalThrottle;  // Ghi cờ vào policyFlags
+        if (overclockCPU) policyFlags |= PMPolicyOverclockCPU;                    // Ghi cờ vào policyFlags
+        if (overclockGPU) policyFlags |= PMPolicyOverclockGPU;                    // Ghi cờ vào policyFlags
+
 
         BOOL enabled = PMPreferenceBoolean(prefs, @"Enabled", PMPreferenceBoolean(prefs, @"enabled", NO));
         BOOL enforcement = PMPreferenceBoolean(prefs, @"AdvancedDisplayEnforcement", YES);
@@ -1028,10 +1099,16 @@ static void PMLoadPreferencesSync(void) {
         __atomic_store_n(&g_PanelOverrideEnabled, panelOverride ? 1 : 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_SpoofScreenMax, spoofScreenMax ? 1 : 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_SpoofGetters, spoofGetters ? 1 : 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_ForceMaxDisplayRate, forceMaxDisplayRate ? 1 : 0, __ATOMIC_RELEASE); // Cập nhật trạng thái
+        __atomic_store_n(&g_DisableThermalThrottle, disableThermalThrottle ? 1 : 0, __ATOMIC_RELEASE); // Cập nhật trạng thái
+        __atomic_store_n(&g_OverclockCPU, overclockCPU ? 1 : 0, __ATOMIC_RELEASE); // Cập nhật trạng thái
+        __atomic_store_n(&g_OverclockGPU, overclockGPU ? 1 : 0, __ATOMIC_RELEASE); // Cập nhật trạng thái
 
-        PMLog(@"Prefs: server=%ld active=%d hard=%d drv=%d panel=%d spoofMax=%d spoofGet=%d floor=%d ceil=%d fps=%ld hz=%ld profileKeys=%lu flags=0x%x",
+
+        PMLog(@"Prefs: server=%ld active=%d hard=%d drv=%d panel=%d spoofMax=%d spoofGet=%d forceMax=%d disableThermal=%d ocCPU=%d ocGPU=%d floor=%d ceil=%d fps=%ld hz=%ld profileKeys=%lu flags=0x%x",
               (long)serverMode, active, hardLock, driverOverride, panelOverride,
-              spoofScreenMax, spoofGetters, lockFloorOn, lockCeilOn,
+              spoofScreenMax, spoofGetters, forceMaxDisplayRate, disableThermalThrottle, overclockCPU, overclockGPU,
+              lockFloorOn, lockCeilOn,
               (long)requestedFPS, (long)requestedHz,
               (unsigned long)profilePrefs.count, (unsigned)policyFlags);
     } @catch (NSException *exception) {
@@ -1042,6 +1119,10 @@ static void PMLoadPreferencesSync(void) {
         __atomic_store_n(&g_ActiveServerMode, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_ServerPolicyFlags, PMPolicyThermalGuard | PMPolicyAdaptiveCadence, __ATOMIC_RELEASE);
         __atomic_store_n(&g_HardLockEnabled, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_ForceMaxDisplayRate, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_DisableThermalThrottle, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_OverclockCPU, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_OverclockGPU, 0, __ATOMIC_RELEASE);
     } @catch (...) {
         __atomic_store_n(&g_TweakEnabled, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_TargetFPS, 60, __ATOMIC_RELEASE);
@@ -1049,6 +1130,10 @@ static void PMLoadPreferencesSync(void) {
         __atomic_store_n(&g_ActiveServerMode, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_ServerPolicyFlags, PMPolicyThermalGuard | PMPolicyAdaptiveCadence, __ATOMIC_RELEASE);
         __atomic_store_n(&g_HardLockEnabled, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_ForceMaxDisplayRate, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_DisableThermalThrottle, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_OverclockCPU, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_OverclockGPU, 0, __ATOMIC_RELEASE);
     }
     __atomic_store_n(&g_PreferencesLoaded, 1, __ATOMIC_RELEASE);
 }
@@ -1097,6 +1182,19 @@ static inline BOOL PMSpoofScreenMaxEnabled(void) {
 static inline BOOL PMSpoofGettersEnabled(void) {
     return __atomic_load_n(&g_SpoofGetters, __ATOMIC_ACQUIRE) != 0;
 }
+static inline BOOL PMForceMaxDisplayRateEnabled(void) { // Helper mới
+    return __atomic_load_n(&g_ForceMaxDisplayRate, __ATOMIC_ACQUIRE) != 0;
+}
+static inline BOOL PMDisableThermalThrottleEnabled(void) { // Helper mới
+    return __atomic_load_n(&g_DisableThermalThrottle, __ATOMIC_ACQUIRE) != 0;
+}
+static inline BOOL PMOverclockCPUEnabled(void) { // Helper mới
+    return __atomic_load_n(&g_OverclockCPU, __ATOMIC_ACQUIRE) != 0;
+}
+static inline BOOL PMOverclockGPUEnabled(void) { // Helper mới
+    return __atomic_load_n(&g_OverclockGPU, __ATOMIC_ACQUIRE) != 0;
+}
+
 
 // ============================================================================
 // 8.0 CORE: PMLockedRange — always [10, 240, target]. No negation, no clip.
@@ -1131,7 +1229,15 @@ static inline void PMTrackApplySuccess(void) {
 // Thermal target cap — floor 10, ceiling 240
 // ============================================================================
 static NSInteger PMThermalTargetCap(NSInteger requestedFPS) {
-    NSInteger nativeMaximum = (NSInteger)[UIScreen mainScreen].maximumFramesPerSecond;
+    // Địt mẹ, nếu DisableThermalThrottle được bật, phớt lờ mọi giới hạn nhiệt của iOS
+    if (PMDisableThermalThrottleEnabled()) {
+        [[TitaniumHardwareAdapter sharedAdapter] bypassThermalSensors:YES];
+        return MAX(requestedFPS, (NSInteger)PM_LOCKED_FLOOR_HZ); // Trả về FPS yêu cầu mà không bị giới hạn nhiệt
+    } else {
+        [[TitaniumHardwareAdapter sharedAdapter] bypassThermalSensors:NO];
+    }
+
+    NSInteger nativeMaximum = (NSInteger)UIScreen.mainScreen.maximumFramesPerSecond;
     if (nativeMaximum <= 0) nativeMaximum = 60;
 
     BOOL locked = PMHardLockEnabled();
@@ -1168,29 +1274,54 @@ typedef struct {
 } TitaniumHardwareTarget;
 
 static NSInteger Titanium_GetHardwareMaximum(void) {
+    // Nếu ForceMaxDisplayRate được kích hoạt, giả mạo giới hạn màn hình thành 999Hz
+    if (PMForceMaxDisplayRateEnabled()) {
+        return 999;
+    }
     NSInteger maximum = (NSInteger)UIScreen.mainScreen.maximumFramesPerSecond;
     return maximum > 0 ? maximum : 60;
 }
 static BOOL Titanium_IsThermalSafe(void) {
+    // Nếu DisableThermalThrottle được kích hoạt, luôn coi là an toàn về nhiệt
+    if (PMDisableThermalThrottleEnabled()) {
+        return YES;
+    }
     if (@available(iOS 11.0, *)) {
         return NSProcessInfo.processInfo.thermalState < NSProcessInfoThermalStateSerious;
     }
     return YES;
 }
 static BOOL Titanium_IsPowerSafe(void) {
+    // Nếu DisableThermalThrottle được kích hoạt, luôn coi là an toàn về nguồn điện (vì nó thường đi kèm với thermal)
+    if (PMDisableThermalThrottleEnabled()) {
+        return YES;
+    }
     return !NSProcessInfo.processInfo.isLowPowerModeEnabled;
 }
 static TitaniumHardwareTarget Titanium_ResolveHardwareTarget(NSInteger requestedFPS, NSInteger requestedHz) {
     TitaniumHardwareTarget target = {0};
     target.requestedFPS = MIN(MAX(requestedFPS, 10), 240);
     target.requestedHz = MIN(MAX(requestedHz, 10), 240);
-    target.hardwareMaximum = Titanium_GetHardwareMaximum();
+    target.hardwareMaximum = Titanium_GetHardwareMaximum(); // Sử dụng hàm Titanium_GetHardwareMaximum mới
+
+    // Nếu ForceMaxDisplayRate được kích hoạt, yêu cầu TitaniumHardwareAdapter force panel rate
+    if (PMForceMaxDisplayRateEnabled()) {
+        [[TitaniumHardwareAdapter sharedAdapter] forceDisplayPanelRate:target.requestedHz];
+        target.effectiveHz = target.requestedHz; // Đặt hiệu quả bằng yêu cầu
+        target.effectiveFPS = target.requestedFPS;
+    } else {
+        [[TitaniumHardwareAdapter sharedAdapter] forceDisplayPanelRate:0]; // Reset driver
+        target.effectiveHz = MIN(target.requestedHz, target.hardwareMaximum);
+        target.effectiveFPS = MIN(target.requestedFPS, target.effectiveHz);
+    }
+
     BOOL locked = PMHardLockEnabled();
     BOOL overrideThermal = PMHardLockOverrideThermal();
+
     if (locked) {
         target.effectiveHz = MIN(MAX(target.requestedHz, 10), 240);
         target.effectiveFPS = MIN(MAX(target.requestedFPS, 10), 240);
-        if (!overrideThermal) {
+        if (!overrideThermal && !PMDisableThermalThrottleEnabled()) { // Chỉ áp dụng thermal nếu không bị bypass
             NSInteger safeFPS = PMThermalTargetCap(target.effectiveFPS);
             NSInteger safeHz = PMThermalTargetCap(target.effectiveHz);
             target.effectiveFPS = MIN(target.effectiveFPS, safeFPS);
@@ -1199,12 +1330,15 @@ static TitaniumHardwareTarget Titanium_ResolveHardwareTarget(NSInteger requested
         target.effectiveFPS = MIN(target.effectiveFPS, target.effectiveHz);
         return target;
     }
-    target.effectiveHz = MIN(target.requestedHz, target.hardwareMaximum);
-    target.effectiveFPS = MIN(target.requestedFPS, target.effectiveHz);
-    NSInteger safeFPS = PMThermalTargetCap(target.effectiveFPS);
-    NSInteger safeHz = PMThermalTargetCap(target.effectiveHz);
-    target.effectiveFPS = MIN(target.effectiveFPS, safeFPS);
-    target.effectiveHz = MIN(target.effectiveHz, safeHz);
+    
+    // Chỉ áp dụng thermal cap nếu không bị bypass
+    if (!PMDisableThermalThrottleEnabled()) {
+        NSInteger safeFPS = PMThermalTargetCap(target.effectiveFPS);
+        NSInteger safeHz = PMThermalTargetCap(target.effectiveHz);
+        target.effectiveFPS = MIN(target.effectiveFPS, safeFPS);
+        target.effectiveHz = MIN(target.effectiveHz, safeHz);
+    }
+    
     target.effectiveFPS = MIN(target.effectiveFPS, target.effectiveHz);
     return target;
 }
@@ -1213,6 +1347,8 @@ static BOOL Titanium_ExecuteTier4Safely(void) {
         __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE) != 1 ||
         !PMPolicyEnabled(PMPolicyPremiumTier4Display)) return NO;
     if (PMExactRateEnforcementEnabled()) return YES;
+    // Nếu DisableThermalThrottle được kích hoạt, bỏ qua kiểm tra thermal/power
+    if (PMDisableThermalThrottleEnabled()) return YES;
     return Titanium_IsThermalSafe() && Titanium_IsPowerSafe();
 }
 static TitaniumHardwareTarget Titanium_ResolvePremiumTier4Target(void) {
@@ -1297,7 +1433,7 @@ static CAFrameRateRange PMRateRangeForActiveServer(CAFrameRateRange original, NS
         PM_METRIC_BUMP(hardFloorEnforcements);
         NSInteger target = PMGetTargetFPS();
         target = MIN(MAX(target, 10), 240);
-        if (!PMHardLockOverrideThermal()) {
+        if (!PMHardLockOverrideThermal() && !PMDisableThermalThrottleEnabled()) { // Chỉ áp dụng thermal nếu không bị bypass
             NSInteger thermalCapped = PMThermalTargetCap(target);
             target = MIN(MAX(thermalCapped, 10), 240);
         }
@@ -1350,7 +1486,34 @@ static void PMRefreshTrackedDisplayLinks(void) {
         dispatch_async(dispatch_get_main_queue(), ^{ PMRefreshTrackedDisplayLinks(); });
         return;
     }
-    if (PMIsTweakActive() && (PMDriverOverrideEnabled() || PMPanelOverrideEnabled())) {
+
+    // Điều khiển Hardware Adapter dựa trên trạng thái tweak và policy flags
+    BOOL active = PMIsTweakActive();
+    if (active && __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE) == 2) { // Chỉ ADMIN có quyền điều khiển này
+        if (PMDisableThermalThrottleEnabled()) {
+            [[TitaniumHardwareAdapter sharedAdapter] bypassThermalSensors:YES];
+        } else {
+            [[TitaniumHardwareAdapter sharedAdapter] bypassThermalSensors:NO];
+        }
+
+        if (PMForceMaxDisplayRateEnabled()) {
+            [[TitaniumHardwareAdapter sharedAdapter] forceDisplayPanelRate:PMGetTargetHz()];
+        } else {
+            [[TitaniumHardwareAdapter sharedAdapter] forceDisplayPanelRate:0];
+        }
+
+        if (PMOverclockCPUEnabled() || PMOverclockGPUEnabled()) {
+            [[TitaniumHardwareAdapter sharedAdapter] overclockCPU:PMOverclockCPUEnabled() gpu:PMOverclockGPUEnabled()];
+        } else {
+            [[TitaniumHardwareAdapter sharedAdapter] overclockCPU:NO gpu:NO];
+        }
+    } else {
+        // Đảm bảo reset trạng thái phần cứng nếu không phải ADMIN hoặc tweak không active
+        [[TitaniumHardwareAdapter sharedAdapter] resetClocks];
+    }
+
+
+    if (active && (PMDriverOverrideEnabled() || PMPanelOverrideEnabled())) {
         PMAttemptDriverOverride(PMGetTargetHz());
     }
     NSArray<CADisplayLink *> *links = nil;
@@ -1429,7 +1592,7 @@ void Titanium_ReassertTrackedDisplayLinks(void) {
 
 __attribute__((visibility("default"), used))
 void PMControlTweakDumpDiagnostics(void) {
-    PMLogCritical(@"diag server=%d active=%d unlock=%ld hard=%d drv=%d panel=%d spoofMax=%d spoofGet=%d drvOK=%d fps=%ld hz=%ld flags=0x%x",
+    PMLogCritical(@"diag server=%d active=%d unlock=%ld hard=%d drv=%d panel=%d spoofMax=%d spoofGet=%d forceMax=%d disableThermal=%d ocCPU=%d ocGPU=%d drvOK=%d fps=%ld hz=%ld flags=0x%x",
                   (int)__atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE),
                   (int)PMIsTweakActive(),
                   (long)PMUnlockLevel(),
@@ -1438,11 +1601,15 @@ void PMControlTweakDumpDiagnostics(void) {
                   (int)PMPanelOverrideEnabled(),
                   (int)PMSpoofScreenMaxEnabled(),
                   (int)PMSpoofGettersEnabled(),
+                  (int)PMForceMaxDisplayRateEnabled(),
+                  (int)PMDisableThermalThrottleEnabled(),
+                  (int)PMOverclockCPUEnabled(),
+                  (int)PMOverclockGPUEnabled(),
                   (int)__atomic_load_n(&g_DriverWriteSucceeded, __ATOMIC_ACQUIRE),
                   (long)PMGetTargetFPS(),
                   (long)PMGetTargetHz(),
                   (unsigned)__atomic_load_n(&g_ServerPolicyFlags, __ATOMIC_ACQUIRE));
-    PMLogCritical(@"diag metrics: adj=%llu getR=%llu getF=%llu spoof=%llu reas=%llu rej=%llu exc=%llu lock=%llu floor=%llu drvOK=%llu swap=%llu maxSp=%llu plist=%llu",
+    PMLogCritical(@"diag metrics: adj=%llu getR=%llu getF=%llu spoof=%llu reas=%llu rej=%llu exc=%llu lock=%llu floor=%llu drvOK=%llu swap=%llu maxSp=%llu plist=%llu droppedLogs=%llu",
                   atomic_load(&g_PMMetrics.rateAdjustments),
                   atomic_load(&g_PMMetrics.displayLinkGetRangeHits),
                   atomic_load(&g_PMMetrics.displayLinkGetFPSHits),
@@ -1455,7 +1622,8 @@ void PMControlTweakDumpDiagnostics(void) {
                   atomic_load(&g_PMMetrics.driverWriteSuccesses),
                   atomic_load(&g_PMMetrics.swapIntervalWrites),
                   atomic_load(&g_PMMetrics.screenMaxSpoofHits),
-                  atomic_load(&g_PMMetrics.profilePlistLoads));
+                  atomic_load(&g_PMMetrics.profilePlistLoads),
+                  atomic_load(&g_PMMetrics.droppedLogs));
 }
 
 static void PMRefreshScreenCaptureState(void) {
@@ -1494,6 +1662,10 @@ static void PMDarwinThermalChanged(CFNotificationCenterRef center,
 %hook UIScreen
 - (NSInteger)maximumFramesPerSecond {
     NSInteger original = %orig;
+    if (PMForceMaxDisplayRateEnabled() && PMIsTweakActive()) { // Nếu ForceMaxDisplayRate được bật
+        PM_METRIC_BUMP(screenMaxSpoofHits);
+        return MAX(original, (NSInteger)PM_LOCKED_CEILING_HZ); // Đẩy lên 240Hz hoặc cao hơn
+    }
     if (PMSpoofScreenMaxEnabled() && PMIsTweakActive()) {
         PM_METRIC_BUMP(screenMaxSpoofHits);
         return MAX(original, (NSInteger)PM_LOCKED_CEILING_HZ);
@@ -1601,7 +1773,7 @@ static void PMDarwinThermalChanged(CFNotificationCenterRef center,
 
 - (NSInteger)preferredFramesPerSecond {
     if (PMSpoofGettersEnabled() && PMIsTweakActive() &&
-        (PMHardLockEnabled() || __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE) == 3)) {
+        (PMHardLockEnabled() || __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE) == 3 || PMForceMaxDisplayRateEnabled())) { // Thêm cờ ForceMaxDisplayRate
         PM_METRIC_BUMP(displayLinkGetFPSHits);
         PM_METRIC_BUMP(spoofGetterHits);
         return PMGetTargetFPS();
@@ -1612,7 +1784,7 @@ static void PMDarwinThermalChanged(CFNotificationCenterRef center,
 - (CAFrameRateRange)preferredFrameRateRange {
     if (@available(iOS 15.0, *)) {
         if (PMSpoofGettersEnabled() && PMIsTweakActive() &&
-            (PMHardLockEnabled() || __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE) == 3)) {
+            (PMHardLockEnabled() || __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE) == 3 || PMForceMaxDisplayRateEnabled())) { // Thêm cờ ForceMaxDisplayRate
             PM_METRIC_BUMP(displayLinkGetRangeHits);
             PM_METRIC_BUMP(spoofGetterHits);
             return PMLockedRange(PMGetTargetFPS());
@@ -1787,6 +1959,14 @@ static void PMStartThermalMonitor(void) {
     dispatch_source_set_event_handler(g_PMThermalMonitor, ^{
         @autoreleasepool {
             if (!PMIsTweakActive()) return;
+
+            // Nếu DisableThermalThrottle được bật, không cần theo dõi thermal state và Low Power Mode từ iOS
+            if (PMDisableThermalThrottleEnabled()) {
+                g_PMLastThermalState = NSProcessInfoThermalStateNominal;
+                g_PMLastLowPowerState = NO;
+                return;
+            }
+
             if (@available(iOS 11.0, *)) {
                 NSProcessInfoThermalState current = NSProcessInfo.processInfo.thermalState;
                 if (current != g_PMLastThermalState) {
@@ -1932,15 +2112,20 @@ static void PMStopDriverMonitor(void) {
                 PMStopThermalMonitor();
                 PMStopReassertMonitor();
                 PMStopDriverMonitor();
+                [[TitaniumHardwareAdapter sharedAdapter] resetClocks]; // Reset trạng thái phần cứng khi app terminate
             }];
 
-            PMLogCritical(@"%@ | GETTER-SPOOF+PLIST build init; server=%d active=%d hard=%d spoofMax=%d spoofGet=%d unlock=%ld target=%ld",
+            PMLogCritical(@"%@ | GETTER-SPOOF+PLIST build init; server=%d active=%d hard=%d spoofMax=%d spoofGet=%d forceMax=%d disableThermal=%d ocCPU=%d ocGPU=%d unlock=%ld target=%ld",
                   PM_BUILD_VERSION,
                   (int)__atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE),
                   (int)PMIsTweakActive(),
                   (int)PMHardLockEnabled(),
                   (int)PMSpoofScreenMaxEnabled(),
                   (int)PMSpoofGettersEnabled(),
+                  (int)PMForceMaxDisplayRateEnabled(),
+                  (int)PMDisableThermalThrottleEnabled(),
+                  (int)PMOverclockCPUEnabled(),
+                  (int)PMOverclockGPUEnabled(),
                   (long)PMUnlockLevel(),
                   (long)PMGetTargetFPS());
         });
