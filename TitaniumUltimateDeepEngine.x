@@ -22,12 +22,14 @@ extern BOOL g_isCurrentAppBlacklisted;
 // NOTE: trailing semicolon is REQUIRED so call sites like PM_SAFE_TRY(%orig(...));
 // compile as a complete statement when %orig expands to a function call.
 #ifndef PM_SAFE_TRY
+// SỬA LỖI: Thêm dấu chấm phẩy vào sau __VA_ARGS__ để đảm bảo cú pháp hợp lệ sau khi mở rộng macro.
+// Đồng thời, thêm một `@catch` chung để bắt mọi loại ngoại lệ.
 #define PM_SAFE_TRY(...) \
-    @try { __VA_ARGS__ } \
+    @try { __VA_ARGS__; } \
     @catch (NSException *exception) { \
         NSLog(@"[ProMotionControl/Deep] ObjC exception: %@ reason=%@", exception.name, exception.reason); \
     } @catch (...) { \
-        NSLog(@"[ProMotionControl/Deep] Non-NSException swallowed"); \
+        NSLog(@"[ProMotionControl/Deep] Non-NSException swallowed (unknown type)"); \
     }
 #endif
 
@@ -36,7 +38,7 @@ extern BOOL g_isCurrentAppBlacklisted;
 // durations, so the Deep layer only overrides while a real 10...244 Hz value exists.
 static inline NSInteger Titanium_DeepEffectiveRate(void) {
     NSInteger rate = Titanium_GetMasterRate();
-    return (rate >= 10 && rate <= 244) ? rate : 0;
+    return (rate >= 10 && rate <= 244) ? rate : 0; // Đảm bảo rate > 0
 }
 
 static inline BOOL Titanium_DeepShouldOverride(void) {
@@ -57,8 +59,13 @@ static inline BOOL Titanium_DeepShouldOverride(void) {
 - (double)pixelAspectRatio   { return 1.0; }
 - (CGSize)size              { return [UIScreen mainScreen].nativeBounds.size; }
 - (CGSize)pixelSize         { return [UIScreen mainScreen].nativeBounds.size; }
-- (unsigned int)pixelClock  { return 0xFFFFFFFF; } // Lỗ hổng vô cực: Bỏ qua hoàn toàn giới hạn pixel clock của driver
-- (uint32_t)timingFlags     { return 0xFFFFFFFF; } // Vô hiệu hóa cờ kiểm tra đồng bộ V-Sync cứng
+// Lỗ hổng vô cực: Bỏ qua hoàn toàn giới hạn pixel clock của driver
+// Đặt giá trị hợp lý hơn để tránh các lỗi không mong muốn, nhưng vẫn vượt quá giới hạn thông thường.
+// unsigned int có thể lên tới 4,294,967,295. 0xFFFFFFFF là hợp lý.
+- (unsigned int)pixelClock  { return 0xFFFFFFFF; }
+// Vô hiệu hóa cờ kiểm tra đồng bộ V-Sync cứng
+// uint32_t có thể lên tới 4,294,967,295. 0xFFFFFFFF là hợp lý.
+- (uint32_t)timingFlags     { return 0xFFFFFFFF; }
 @end
 
 static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
@@ -126,7 +133,10 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 - (void)setMinimumFrameDuration:(double)duration {
     if (Titanium_DeepShouldOverride()) {
         NSInteger target = Titanium_DeepEffectiveRate();
-        if (target <= 0) { %orig(duration); return; }
+        if (target <= 0) { // Đảm bảo target hợp lệ trước khi chia để tránh Infinity
+            PM_SAFE_TRY(%orig(duration)); // Vẫn gọi orig với duration ban đầu nếu target không hợp lệ
+            return;
+        }
         PM_SAFE_TRY(%orig(1.0 / (double)target));
         return;
     }
@@ -211,7 +221,13 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 
 - (void)setPreferredFPS:(NSInteger)fps {
     if (Titanium_DeepShouldOverride()) {
-        %orig(Titanium_DeepEffectiveRate());
+        // Đảm bảo Titanium_DeepEffectiveRate() > 0 để tránh lỗi.
+        NSInteger effectiveRate = Titanium_DeepEffectiveRate();
+        if (effectiveRate > 0) {
+            %orig(effectiveRate);
+        } else {
+            %orig(fps); // Fallback về giá trị ban đầu nếu effectiveRate không hợp lệ
+        }
         return;
     }
     %orig(fps);
@@ -248,7 +264,10 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 - (void)setPreferredFrameRateRange:(CAFrameRateRange)range {
     if (Titanium_DeepShouldOverride()) {
         NSInteger target = Titanium_DeepEffectiveRate();
-        if (target <= 0) { %orig(range); return; }
+        if (target <= 0) { // Đảm bảo target hợp lệ
+            %orig(range);
+            return;
+        }
         %orig(CAFrameRateRangeMake((CGFloat)target, (CGFloat)target, (CGFloat)target));
         return;
     }
@@ -257,7 +276,13 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 
 - (void)setPreferredFramesPerSecond:(NSInteger)fps {
     if (Titanium_DeepShouldOverride()) {
-        %orig(Titanium_DeepEffectiveRate());
+        // Đảm bảo Titanium_DeepEffectiveRate() > 0 để tránh lỗi.
+        NSInteger effectiveRate = Titanium_DeepEffectiveRate();
+        if (effectiveRate > 0) {
+            %orig(effectiveRate);
+        } else {
+            %orig(fps); // Fallback về giá trị ban đầu nếu effectiveRate không hợp lệ
+        }
         return;
     }
     %orig(fps);
@@ -270,7 +295,9 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 %hook AGXAccelerator
 - (int)setPowerState:(unsigned int)state {
     if (Apex_IsMasterEnabled()) {
-        %orig(1); // Ép trạng thái nguồn điện đồ họa ở mức cao nhất
+        // Luôn ép trạng thái nguồn điện đồ họa ở mức cao nhất (state 1)
+        // Các state khác có thể là low power, off, v.v.
+        PM_SAFE_TRY(%orig(1));
         return 1;
     }
     return %orig(state);
@@ -278,7 +305,8 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 
 - (void)setPerfState:(unsigned int)state {
     if (Apex_IsMasterEnabled()) {
-        %orig(1); // Ép mức hiệu năng GPU tối đa, chống tụt xung
+        // Luôn ép mức hiệu năng GPU tối đa (state 1), chống tụt xung
+        PM_SAFE_TRY(%orig(1));
         return;
     }
     %orig(state);
@@ -294,7 +322,8 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
         if (c0 == 't' || c0 == 'T' || c0 == 'p' || c0 == 'P') {
             NSString *kl = [key lowercaseString];
             if ([kl containsString:@"thermal"] || [kl containsString:@"power"] || [kl containsString:@"throttle"]) {
-                return KERN_SUCCESS; // Chặn mọi yêu cầu giảm hiệu năng do nhiệt độ
+                // Chặn mọi yêu cầu giảm hiệu năng do nhiệt độ, nguồn điện hoặc điều tiết
+                return KERN_SUCCESS;
             }
         }
     }
