@@ -10,6 +10,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSInteger)getSelectedFPS;
 - (BOOL)isEngineEnabled;
 - (void)reloadSettings;
+- (BOOL)isForceMaxDisplayRateEnabled; // Thêm phương thức mới
+- (BOOL)isDisableThermalThrottleEnabled; // Thêm phương thức mới
+- (BOOL)isOverclockCPUEnabled; // Thêm phương thức mới
+- (BOOL)isOverclockGPUEnabled; // Thêm phương thức mới
 @end
 
 FOUNDATION_EXPORT NSInteger Titanium_GetMasterRate(void);
