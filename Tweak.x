@@ -1160,6 +1160,14 @@ static inline NSInteger PMGetTargetHz(void) {
     NSInteger hz = __atomic_load_n(&g_TargetHz, __ATOMIC_ACQUIRE);
     return hz > 0 ? hz : PMGetTargetFPS();
 }
+
+// Cross-module symbols declared `extern` by TitaniumAbsoluteAntiThrottleEngine.x,
+// TitaniumHardwareOverdriveGuard.x and TitaniumApexSupremeUltimateEngine.x.
+// They had no definition anywhere, which caused the link failure.
+// Titanium_SharedRealThermalState: 0=Nominal, 1=Fair, 2=Serious, 3=Critical.
+// Written by the HardwareOverdriveGuard thermalState hook, read by the Apex layer.
+volatile NSInteger Titanium_SharedRealThermalState = 0;
+NSInteger PM_ExportMasterRate(void) { return PMGetTargetFPS(); }
 static inline BOOL PMExactRateEnforcementEnabled(void) {
     return __atomic_load_n(&g_ExactRateEnforcement, __ATOMIC_ACQUIRE) != 0;
 }
