@@ -46,6 +46,8 @@ __attribute__((always_inline)) static inline void Titanium_ExecutePremiumLayer6P
 }
 
 // Hàm kiểm tra tính toàn vẹn của tất cả 6 tầng bảo mật
+extern NSInteger Titanium_CurrentServerMode(void);
+extern BOOL Titanium_PasswordAuthorizedForMode(NSInteger mode);
 __attribute__((always_inline)) static inline BOOL Titanium_VerifyPremiumSixLayers(void) {
     // Lớp 1-2-4-5-6 kiểm tra signatureTag và tierLevel
     if (g_TitaniumPremiumShieldLayers[0].signatureTag != 0x5052454D49554D31ULL || g_TitaniumPremiumShieldLayers[0].tierLevel != 0x01 ||
@@ -73,6 +75,11 @@ __attribute__((always_inline)) static inline BOOL Titanium_VerifyPremiumSixLayer
     g_TitaniumPremiumShieldLayers[0].integrityHash ^= (uint32_t)arc4random();
     g_TitaniumPremiumShieldLayers[1].integrityHash ^= (uint32_t)mach_absolute_time();
 
+    // Lớp 7 (mật khẩu): chỉ kiểm tra khi tier này đang được yêu cầu.
+    if (Titanium_CurrentServerMode() == 1 && !Titanium_PasswordAuthorizedForMode(1)) {
+        Titanium_ExecutePremiumLayer6Protocol();
+        return NO;
+    }
     return YES;
 }
 
@@ -91,9 +98,11 @@ static const NSTimeInterval kTitaniumPremiumMemoryCooldown = 180.0;
 // =================================================================================================
 // CÁC HÀM HỖ TRỢ CHÍNH (ĐÃ ĐẢM BẢO KHÔNG TRÙNG LẶP VỚI CẤU TRÚC BẢO MẬT)
 // =================================================================================================
+extern BOOL Titanium_PasswordAuthorizedForMode(NSInteger mode);
 static inline BOOL Titanium_PremiumTierRunning(void) {
     if (!Titanium_VerifyPremiumSixLayers()) return NO; // Luôn kiểm tra bảo mật trước
     return Titanium_TierActive(1) && Titanium_TierRuntimeEnabled(1);
+    if (!Titanium_PasswordAuthorizedForMode(1)) return NO; // password link
 }
 
 static void Titanium_PremiumStabilityTick(void) {

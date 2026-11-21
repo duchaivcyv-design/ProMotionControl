@@ -1,5 +1,6 @@
 #import "TitaniumSettingsAPI.h"
 #import <CoreFoundation/CoreFoundation.h>
+#import <CommonCrypto/CommonDigest.h>
 
 #define TITANIUM_PREFS_PATH @"/var/mobile/Library/Preferences/com.dell.promotioncontrol.plist"
 #define TITANIUM_PREFS_DOMAIN CFSTR("com.dell.promotioncontrol")
@@ -354,4 +355,34 @@ __attribute__((constructor)) static void Titanium_BridgeInitializer(void) {
         // Do not pin CPU cores or request real-time scheduler privileges.
         // iOS owns core placement and DVFS; hook callbacks read the atomic cache.
     }
+}
+
+
+// ----------------------------------------------------------------------------------------------
+// PASSWORD LINK: PREMIUM / ADMIN tiers only run when the control app has stored a token that was
+// derived from this install's identity and the tier number after a correct password.
+// ----------------------------------------------------------------------------------------------
+extern const char *PMControlTweakInstallationID(void);
+
+static NSString *Titanium_ServerAuthTokenForMode(NSString *installID, NSInteger mode) {
+    if (installID.length < 32) return nil;
+    NSString *material = [NSString stringWithFormat:@"PMC-AUTH-v1|%@|%ld|%@", installID, (long)mode, @"PMC-LOCAL-GATE-v1"];
+    NSData *data = [material dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (NSUInteger i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+    return hex;
+}
+
+BOOL Titanium_PasswordAuthorizedForMode(NSInteger mode) {
+    if (mode != 1 && mode != 2) return NO;
+    const char *raw = PMControlTweakInstallationID();
+    if (!raw || raw[0] == '\0') return NO;
+    NSString *installID = [NSString stringWithUTF8String:raw];
+    NSString *expected = Titanium_ServerAuthTokenForMode(installID, mode);
+    if (!expected) return NO;
+    NSDictionary *root = Titanium_ReadRootPreferences();
+    id stored = root[@"PMServerAuthToken"];
+    return [stored isKindOfClass:[NSString class]] && [stored isEqualToString:expected];
 }

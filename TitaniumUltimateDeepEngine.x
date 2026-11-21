@@ -93,7 +93,7 @@ static inline BOOL Titanium_DeepShouldOverride(void) {
 }
 
 - (BOOL)respondsToSelector:(SEL)sel {
-    return [_realMode respondsToSelector:sel] || [TitaniumDisplayModeProxy instancesRespondToSelector:sel];
+    return [_realMode respondsToSelector:sel] || class_respondsToSelector([TitaniumDisplayModeProxy class], sel);
 }
 
 - (BOOL)isKindOfClass:(Class)cls {

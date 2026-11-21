@@ -45,6 +45,8 @@ __attribute__((always_inline)) static inline void Titanium_ExecuteExtremeLayer6P
     abort();
 }
 
+extern NSInteger Titanium_CurrentServerMode(void);
+extern BOOL Titanium_PasswordAuthorizedForMode(NSInteger mode);
 __attribute__((always_inline)) static inline BOOL Titanium_VerifyAllSixLayers(void) {
     // Lớp 1: Kiểm tra chữ ký tĩnh
     if (g_TitaniumLayer1Block.signatureMagic != 0x5449544141444D4EULL) {
@@ -81,6 +83,11 @@ __attribute__((always_inline)) static inline BOOL Titanium_VerifyAllSixLayers(vo
         Titanium_ExecuteExtremeLayer6Panic();
         return NO;
     }
+    // Lớp 7 (mật khẩu): chỉ kiểm tra khi tier này đang được yêu cầu.
+    if (Titanium_CurrentServerMode() == 2 && !Titanium_PasswordAuthorizedForMode(2)) {
+        Titanium_ExecuteExtremeLayer6Panic();
+        return NO;
+    }
     return YES;
 }
 
@@ -96,9 +103,11 @@ static const NSInteger kTitaniumAdminMemoryTickEvery = 200;
 static const uint64_t kTitaniumAdminMemoryGrowthLimit = 48ull * 1024ull * 1024ull;
 static const NSTimeInterval kTitaniumAdminMemoryCooldown = 120.0;
 
+extern BOOL Titanium_PasswordAuthorizedForMode(NSInteger mode);
 static inline BOOL Titanium_AdminTierRunning(void) {
     if (!Titanium_VerifyAllSixLayers()) return NO;
     return Titanium_TierActive(2) && Titanium_TierRuntimeEnabled(2);
+    if (!Titanium_PasswordAuthorizedForMode(2)) return NO; // password link
 }
 
 static void Titanium_AdminStabilityTick(void) {

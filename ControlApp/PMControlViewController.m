@@ -157,6 +157,18 @@ static BOOL PMProtectedPasswordMatches(NSString *provided, BOOL adminPassword)
     return difference == 0;
 }
 
+static NSString *PMServerAuthTokenForMode(NSString *installID, NSInteger mode)
+{
+    if (installID.length < 32) return nil;
+    NSString *material = [NSString stringWithFormat:@"PMC-AUTH-v1|%@|%ld|%@", installID, (long)mode, @"PMC-LOCAL-GATE-v1"];
+    NSData *data = [material dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (NSUInteger i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+    return hex;
+}
+
 static NSString *PMAuthScopeForMode(NSInteger mode)
 {
     return mode == 2 ? @"ADMIN" : @"PREMIUM";
@@ -3349,7 +3361,11 @@ void PMInstallAppLocalization(void)
         BOOL authorizationSaved = passwordMatches &&
             (adminRequested ? PMRememberAdminActivation() : PMRememberPremiumActivation());
         if (authorizationSaved) {
-            authorizationSaved = PMWriteDomainChanges(@{@"ActiveServerMode": @(adminRequested ? 2 : 1)});
+            NSInteger grantedMode = adminRequested ? 2 : 1;
+            NSMutableDictionary *grant = [@{@"ActiveServerMode": @(grantedMode)} mutableCopy];
+            NSString *authToken = PMServerAuthTokenForMode(PMPremiumTweakInstallationID(), grantedMode);
+            if (authToken) grant[@"PMServerAuthToken"] = authToken;
+            authorizationSaved = PMWriteDomainChanges(grant);
         }
 
         if (authorizationSaved) {
