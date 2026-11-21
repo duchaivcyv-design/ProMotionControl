@@ -22,8 +22,9 @@ TWEAK_NAME = ProMotionControl
 # Explicit file list — NO wildcards. Theos 4.x has a known bug when wildcarding
 # .x files inside subdirectories; every .x file lives at project root.
 # Filenames below match the repo exactly. If you rename a file, update this list.
+# TitaniumCoreBridge.m is intentionally NOT built: it duplicated every symbol in
+# TitaniumSettingsAPI.x (older copy, missing ForceMax/Thermal/Overclock accessors).
 ProMotionControl_FILES = Tweak.x \
-                         TitaniumCoreBridge.m \
                          TitaniumBackgroundContinuity.m \
                          TitaniumServerFreeEngine.x \
                          TitaniumServerPremiumEngine.x \
