@@ -98,32 +98,10 @@ static inline BOOL Titanium_Supreme_KeyIsThrottleRelated(NSString *key) {
            [kl containsString:@"throttle"];
 }
 
-// =================================================================================================
-// 1. SUPREME DISPLAY MODE & UNBOUNDED PIXEL CLOCK (200MHz - 800MHz+ Bandwidth Overclock)
-// =================================================================================================
-@interface TitaniumSupremeUltimateDisplayMode : NSObject
-@end
 
-@implementation TitaniumSupremeUltimateDisplayMode
-- (double)refreshRate       { return (double)Titanium_SupremeEffectiveRate(); }
-- (double)refreshRateForMode { return (double)Titanium_SupremeEffectiveRate(); }
-- (double)safeRefreshRate    { return (double)Titanium_SupremeEffectiveRate(); }
-- (double)nominalRefreshRate { return (double)Titanium_SupremeEffectiveRate(); }
-- (double)pixelAspectRatio   { return 1.0; }
-- (CGSize)size              { return [UIScreen mainScreen].nativeBounds.size; }
-- (CGSize)pixelSize         { return [UIScreen mainScreen].nativeBounds.size; }
-- (unsigned int)pixelClock  { return 0xFFFFFFFF; } // Lỗ hổng vô cực: Mở rộng Pixel Clock từ 200MHz lên 800MHz+ không giới hạn
-- (uint32_t)timingFlags     { return 0xFFFFFFFF; } // Triệt tiêu hoàn toàn V-Sync phần cứng
-@end
-
-static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
-    static TitaniumSupremeUltimateDisplayMode *s_supremeMode = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        s_supremeMode = [[TitaniumSupremeUltimateDisplayMode alloc] init];
-    });
-    return s_supremeMode;
-}
+// Shared proxy helpers (defined in TitaniumUltimateDeepEngine.x).
+extern id Titanium_WrapDisplayMode(id realMode, double (^rateProvider)(void));
+extern id Titanium_UnwrapDisplayMode(id mode);
 
 %group TitaniumApexSupremeUltimateGroup
 
@@ -173,12 +151,13 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
 }
 
 - (int)getDefaultDisplayMode:(id *)arg1 {
-    if (Apex_IsMasterEnabled() && arg1) {
-        *arg1 = (id)Titanium_GetSupremeMode();
-        return 0;
+    int result = %orig(arg1);
+    if (result == 0 && arg1 && *arg1 && Titanium_SupremeShouldOverride()) {
+        *arg1 = Titanium_WrapDisplayMode(*arg1, ^double(void) { return (double)Titanium_SupremeEffectiveRate(); });
     }
-    return %orig(arg1);
+    return result;
 }
+
 %end
 
 // =================================================================================================
@@ -296,31 +275,26 @@ static TitaniumSupremeUltimateDisplayMode *Titanium_GetSupremeMode(void) {
     %orig(fps);
 }
 
+
+
 - (NSArray *)availableModes {
     NSArray *orig = %orig;
-    if (Titanium_SupremeShouldOverride()) {
-        id supremeMode = (id)Titanium_GetSupremeMode();
-        return supremeMode ? (orig ? [orig arrayByAddingObject:supremeMode] : @[supremeMode]) : orig;
+    if (!orig || !Titanium_SupremeShouldOverride()) return orig;
+    NSMutableArray *wrapped = [NSMutableArray arrayWithCapacity:orig.count];
+    for (id mode in orig) {
+        [wrapped addObject:Titanium_WrapDisplayMode(mode, ^double(void) { return (double)Titanium_SupremeEffectiveRate(); })];
     }
-    return orig;
+    return wrapped;
 }
-
 - (id)currentMode {
-    if (Titanium_SupremeShouldOverride()) {
-        id supremeMode = (id)Titanium_GetSupremeMode();
-        if (supremeMode) return supremeMode;
-    }
-    return %orig;
+    id mode = %orig;
+    if (mode && Titanium_SupremeShouldOverride()) return Titanium_WrapDisplayMode(mode, ^double(void) { return (double)Titanium_SupremeEffectiveRate(); });
+    return mode;
+}
+- (void)setCurrentMode:(id)mode {
+    %orig(Titanium_UnwrapDisplayMode(mode));
 }
 
-- (void)setCurrentMode:(id)mode {
-    if (Titanium_SupremeShouldOverride()) {
-        id supremeMode = (id)Titanium_GetSupremeMode();
-        PM_SAFE_TRY(%orig(supremeMode ? supremeMode : mode));
-        return;
-    }
-    %orig(mode);
-}
 %end
 
 %hook CADisplayLink

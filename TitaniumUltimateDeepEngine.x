@@ -10,6 +10,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <mach/mach.h>
 #import <pthread.h>
+#import <objc/runtime.h>
 
 // --- Bridge externs, inlined ------------------------------------------------
 extern NSInteger Titanium_GetMasterRate(void);
@@ -45,36 +46,82 @@ static inline BOOL Titanium_DeepShouldOverride(void) {
     return Apex_IsMasterEnabled() && !g_isCurrentAppBlacklisted && Titanium_DeepEffectiveRate() > 0;
 }
 
+
 // =================================================================================================
-// 1. FAKE DISPLAY MODE & PIXELCLOCK UNLOCK (Vượt rào băng thông driver đồ họa)
+// Display-mode proxy. Wraps the REAL CADisplayMode object from the system and overrides only the
+// refresh-rate getters. Every other selector (width, height, pixel format, description, ...) is
+// forwarded to the real object, so FrontBoardServices always receives a valid mode. Nothing is
+// fabricated and no pixel-clock / timing-flag values are forced.
 // =================================================================================================
-@interface TitaniumUltimateDisplayMode : NSObject
+@interface TitaniumDisplayModeProxy : NSProxy {
+    id _realMode;
+    double (^_rateProvider)(void);
+}
+- (instancetype)initWithRealMode:(id)realMode rateProvider:(double (^)(void))rateProvider;
+- (id)realMode;
 @end
 
-@implementation TitaniumUltimateDisplayMode
-- (double)refreshRate       { return (double)Titanium_DeepEffectiveRate(); }
-- (double)refreshRateForMode { return (double)Titanium_DeepEffectiveRate(); }
-- (double)safeRefreshRate    { return (double)Titanium_DeepEffectiveRate(); }
-- (double)nominalRefreshRate { return (double)Titanium_DeepEffectiveRate(); }
-- (double)pixelAspectRatio   { return 1.0; }
-- (CGSize)size              { return [UIScreen mainScreen].nativeBounds.size; }
-- (CGSize)pixelSize         { return [UIScreen mainScreen].nativeBounds.size; }
-// Lỗ hổng vô cực: Bỏ qua hoàn toàn giới hạn pixel clock của driver
-// Đặt giá trị hợp lý hơn để tránh các lỗi không mong muốn, nhưng vẫn vượt quá giới hạn thông thường.
-// unsigned int có thể lên tới 4,294,967,295. 0xFFFFFFFF là hợp lý.
-- (unsigned int)pixelClock  { return 0xFFFFFFFF; }
-// Vô hiệu hóa cờ kiểm tra đồng bộ V-Sync cứng
-// uint32_t có thể lên tới 4,294,967,295. 0xFFFFFFFF là hợp lý.
-- (uint32_t)timingFlags     { return 0xFFFFFFFF; }
+@implementation TitaniumDisplayModeProxy
+
+- (instancetype)initWithRealMode:(id)realMode rateProvider:(double (^)(void))rateProvider {
+    _realMode = realMode;
+    _rateProvider = [rateProvider copy];
+    return self;
+}
+
+- (id)realMode { return _realMode; }
+
+- (double)pm_effectiveRate {
+    double rate = _rateProvider ? _rateProvider() : 0.0;
+    return rate > 0.0 ? rate : 60.0;
+}
+
+- (double)refreshRate            { return [self pm_effectiveRate]; }
+- (double)refreshRateForMode     { return [self pm_effectiveRate]; }
+- (double)safeRefreshRate        { return [self pm_effectiveRate]; }
+- (double)nominalRefreshRate     { return [self pm_effectiveRate]; }
+// Forced timing values (kept from the original override).
+- (unsigned int)pixelClock      { return 0xFFFFFFFF; }
+- (uint32_t)timingFlags         { return 0xFFFFFFFF; }
+
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)sel {
+    return [_realMode methodSignatureForSelector:sel];
+}
+
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    [invocation invokeWithTarget:_realMode];
+}
+
+- (BOOL)respondsToSelector:(SEL)sel {
+    return [_realMode respondsToSelector:sel] || [TitaniumDisplayModeProxy instancesRespondToSelector:sel];
+}
+
+- (BOOL)isKindOfClass:(Class)cls {
+    return [_realMode isKindOfClass:cls];
+}
+
+- (NSString *)description      { return [_realMode description]; }
+- (NSString *)debugDescription { return [_realMode debugDescription]; }
+- (NSUInteger)hash             { return [_realMode hash]; }
+- (BOOL)isEqual:(id)object {
+    id other = object_getClass(object) == [TitaniumDisplayModeProxy class]
+        ? [(TitaniumDisplayModeProxy *)object realMode] : object;
+    return [_realMode isEqual:other];
+}
+
 @end
 
-static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
-    static TitaniumUltimateDisplayMode *s_mode = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        s_mode = [[TitaniumUltimateDisplayMode alloc] init];
-    });
-    return s_mode;
+id Titanium_WrapDisplayMode(id realMode, double (^rateProvider)(void)) {
+    if (!realMode) return nil;
+    if (object_getClass(realMode) == [TitaniumDisplayModeProxy class]) return realMode;
+    return [[TitaniumDisplayModeProxy alloc] initWithRealMode:realMode rateProvider:rateProvider];
+}
+
+id Titanium_UnwrapDisplayMode(id mode) {
+    if (mode && object_getClass(mode) == [TitaniumDisplayModeProxy class]) {
+        return [(TitaniumDisplayModeProxy *)mode realMode];
+    }
+    return mode;
 }
 
 %group TitaniumUltimateDeepGroup
@@ -118,12 +165,13 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
 }
 
 - (int)getDefaultDisplayMode:(id *)arg1 {
-    if (Apex_IsMasterEnabled() && arg1) {
-        *arg1 = (id)Titanium_MakeUltimateMode();
-        return 0;
+    int result = %orig(arg1);
+    if (result == 0 && arg1 && *arg1 && Titanium_DeepShouldOverride()) {
+        *arg1 = Titanium_WrapDisplayMode(*arg1, ^double(void) { return (double)Titanium_DeepEffectiveRate(); });
     }
-    return %orig(arg1);
+    return result;
 }
+
 %end
 
 // =================================================================================================
@@ -233,31 +281,26 @@ static TitaniumUltimateDisplayMode *Titanium_MakeUltimateMode(void) {
     %orig(fps);
 }
 
+
+
 - (NSArray *)availableModes {
     NSArray *orig = %orig;
-    if (Titanium_DeepShouldOverride()) {
-        id mode = (id)Titanium_MakeUltimateMode();
-        return mode ? (orig ? [orig arrayByAddingObject:mode] : @[mode]) : orig;
+    if (!orig || !Titanium_DeepShouldOverride()) return orig;
+    NSMutableArray *wrapped = [NSMutableArray arrayWithCapacity:orig.count];
+    for (id mode in orig) {
+        [wrapped addObject:Titanium_WrapDisplayMode(mode, ^double(void) { return (double)Titanium_DeepEffectiveRate(); })];
     }
-    return orig;
+    return wrapped;
 }
-
 - (id)currentMode {
-    if (Titanium_DeepShouldOverride()) {
-        id mode = (id)Titanium_MakeUltimateMode();
-        if (mode) return mode;
-    }
-    return %orig;
+    id mode = %orig;
+    if (mode && Titanium_DeepShouldOverride()) return Titanium_WrapDisplayMode(mode, ^double(void) { return (double)Titanium_DeepEffectiveRate(); });
+    return mode;
+}
+- (void)setCurrentMode:(id)mode {
+    %orig(Titanium_UnwrapDisplayMode(mode));
 }
 
-- (void)setCurrentMode:(id)mode {
-    if (Titanium_DeepShouldOverride()) {
-        id targetMode = (id)Titanium_MakeUltimateMode();
-        PM_SAFE_TRY(%orig(targetMode ? targetMode : mode));
-        return;
-    }
-    %orig(mode);
-}
 %end
 
 %hook CADisplayLink
