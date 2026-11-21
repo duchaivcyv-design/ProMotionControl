@@ -30,7 +30,6 @@
 // Thêm các headers mới cho các module đã được tạo/chỉnh sửa
 #import "TitaniumSettingsAPI.h"
 #import "TitaniumServerTierSupport.h"
-#import "TitaniumHardwareAdapter.h" // Import module thao túng phần cứng
 
 // ============================================================================
 // Private framework symbols (IOMobileFramebuffer, IOKit)
