@@ -258,11 +258,6 @@ static void PMLogCritical(NSString *format, ...) {
         os_unfair_lock_unlock(&g_PMLogLock);
     }
 }
-__attribute__((visibility("default"), used))
-uint64_t PMControlTweakDroppedLogs(void) {
-    return atomic_load_explicit(&g_PMMetrics.droppedLogs, memory_order_acquire); // Sửa lỗi tên biến metric
-}
-
 // ============================================================================
 // Metrics
 // ============================================================================
@@ -306,6 +301,11 @@ typedef struct PMMetrics {
 static PMMetrics g_PMMetrics = {0};
 #define PM_METRIC_BUMP(field) \
     atomic_fetch_add_explicit(&g_PMMetrics.field, 1, memory_order_relaxed)
+
+__attribute__((visibility("default"), used))
+uint64_t PMControlTweakDroppedLogs(void) {
+    return atomic_load_explicit(&g_PMMetrics.droppedLogs, memory_order_acquire); // Sửa lỗi tên biến metric
+}
 
 __attribute__((visibility("default"), used))
 uint64_t PMControlTweakMetric(const char *name) {
@@ -1230,10 +1230,7 @@ static inline void PMTrackApplySuccess(void) {
 static NSInteger PMThermalTargetCap(NSInteger requestedFPS) {
     // Địt mẹ, nếu DisableThermalThrottle được bật, phớt lờ mọi giới hạn nhiệt của iOS
     if (PMDisableThermalThrottleEnabled()) {
-        [[TitaniumHardwareAdapter sharedAdapter] bypassThermalSensors:YES];
         return MAX(requestedFPS, (NSInteger)PM_LOCKED_FLOOR_HZ); // Trả về FPS yêu cầu mà không bị giới hạn nhiệt
-    } else {
-        [[TitaniumHardwareAdapter sharedAdapter] bypassThermalSensors:NO];
     }
 
     NSInteger nativeMaximum = (NSInteger)UIScreen.mainScreen.maximumFramesPerSecond;
@@ -1303,13 +1300,10 @@ static TitaniumHardwareTarget Titanium_ResolveHardwareTarget(NSInteger requested
     target.requestedHz = MIN(MAX(requestedHz, 10), 240);
     target.hardwareMaximum = Titanium_GetHardwareMaximum(); // Sử dụng hàm Titanium_GetHardwareMaximum mới
 
-    // Nếu ForceMaxDisplayRate được kích hoạt, yêu cầu TitaniumHardwareAdapter force panel rate
     if (PMForceMaxDisplayRateEnabled()) {
-        [[TitaniumHardwareAdapter sharedAdapter] forceDisplayPanelRate:target.requestedHz];
         target.effectiveHz = target.requestedHz; // Đặt hiệu quả bằng yêu cầu
         target.effectiveFPS = target.requestedFPS;
     } else {
-        [[TitaniumHardwareAdapter sharedAdapter] forceDisplayPanelRate:0]; // Reset driver
         target.effectiveHz = MIN(target.requestedHz, target.hardwareMaximum);
         target.effectiveFPS = MIN(target.requestedFPS, target.effectiveHz);
     }
@@ -1486,32 +1480,7 @@ static void PMRefreshTrackedDisplayLinks(void) {
         return;
     }
 
-    // Điều khiển Hardware Adapter dựa trên trạng thái tweak và policy flags
     BOOL active = PMIsTweakActive();
-    if (active && __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE) == 2) { // Chỉ ADMIN có quyền điều khiển này
-        if (PMDisableThermalThrottleEnabled()) {
-            [[TitaniumHardwareAdapter sharedAdapter] bypassThermalSensors:YES];
-        } else {
-            [[TitaniumHardwareAdapter sharedAdapter] bypassThermalSensors:NO];
-        }
-
-        if (PMForceMaxDisplayRateEnabled()) {
-            [[TitaniumHardwareAdapter sharedAdapter] forceDisplayPanelRate:PMGetTargetHz()];
-        } else {
-            [[TitaniumHardwareAdapter sharedAdapter] forceDisplayPanelRate:0];
-        }
-
-        if (PMOverclockCPUEnabled() || PMOverclockGPUEnabled()) {
-            [[TitaniumHardwareAdapter sharedAdapter] overclockCPU:PMOverclockCPUEnabled() gpu:PMOverclockGPUEnabled()];
-        } else {
-            [[TitaniumHardwareAdapter sharedAdapter] overclockCPU:NO gpu:NO];
-        }
-    } else {
-        // Đảm bảo reset trạng thái phần cứng nếu không phải ADMIN hoặc tweak không active
-        [[TitaniumHardwareAdapter sharedAdapter] resetClocks];
-    }
-
-
     if (active && (PMDriverOverrideEnabled() || PMPanelOverrideEnabled())) {
         PMAttemptDriverOverride(PMGetTargetHz());
     }
@@ -2111,7 +2080,6 @@ static void PMStopDriverMonitor(void) {
                 PMStopThermalMonitor();
                 PMStopReassertMonitor();
                 PMStopDriverMonitor();
-                [[TitaniumHardwareAdapter sharedAdapter] resetClocks]; // Reset trạng thái phần cứng khi app terminate
             }];
 
             PMLogCritical(@"%@ | GETTER-SPOOF+PLIST build init; server=%d active=%d hard=%d spoofMax=%d spoofGet=%d forceMax=%d disableThermal=%d ocCPU=%d ocGPU=%d unlock=%ld target=%ld",
