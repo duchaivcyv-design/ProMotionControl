@@ -8,8 +8,8 @@
 		<string>Any</string>
 		<key>Bundles</key>
 		<array>
+            <string>com.apple.springboard</string>
 			<string>com.apple.UIKit</string>
-			<string>com.apple.springboard</string>
 			<string>com.dell.promotioncontrol.app</string>
 		</array>
 	</dict>
