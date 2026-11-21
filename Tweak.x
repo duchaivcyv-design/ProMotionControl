@@ -397,11 +397,10 @@ static BOOL PMExecutableLooksLikeInstalledAppProcess(void) {
         NSString *bundleID = bundle.bundleIdentifier ?: @"";
         NSString *bundlePath = [[bundle.bundlePath stringByStandardizingPath] copy] ?: @"";
         NSString *executablePath = [[bundle.executablePath stringByStandardizingPath] copy] ?: @"";
-        if (![bundleID isEqualToString:@"com.dell.promotioncontrol.app"]) return NO;
+        // Runtime now loads in SpringBoard and any UIKit app (see ProMotionControl.plist).
+        // Only refuse processes with no bundle identity or no executable path.
+        if (bundleID.length == 0) return NO;
         if (bundlePath.length == 0 || executablePath.length == 0) return NO;
-        if (![bundlePath hasPrefix:@"/Applications/ProMotionControl.app/"] &&
-            ![bundlePath isEqualToString:@"/Applications/ProMotionControl.app"]) return NO;
-        if (![executablePath hasPrefix:@"/Applications/ProMotionControl.app/"]) return NO;
         NSDictionary *env = NSProcessInfo.processInfo.environment ?: @{};
         if (env[@"XCTestConfigurationFilePath"] || env[@"XCInjectBundleInto"]) return NO;
         if (env[@"DYLD_INSERT_LIBRARIES"] && [env[@"DYLD_INSERT_LIBRARIES"] containsString:@"XCTest"]) return NO;

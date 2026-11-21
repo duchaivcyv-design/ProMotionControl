@@ -1,6 +1,6 @@
 Package: com.dell.promotioncontrol
-Name: ProMotion Control (mã hoá chữ ký anti crack )
-Version: 5.9.0-1A
+Name: ProMotion Control
+Version: 5.9.0t
 Architecture: iphoneos-arm64
 Depends: firmware (>= 15.0), mobilesubstrate (>= 0.9.5000)
 Description: ProMotion Control is a comprehensive performance optimization tool for iOS devices, allowing you to fine-tune refresh rates, frame rates (FPS), and enhance touch responsiveness. It integrates intelligent governors for efficient thermal and power management, while minimizing system latency to deliver the smoothest and most stable user experience. Supports various custom modes to suit every need, from gaming to daily usage.
