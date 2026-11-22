@@ -2031,21 +2031,18 @@ static inline BOOL Titanium_ProcessIsSystemOrControl(void) {
             PMLogCritical(@"%@ | guard rejected", PM_BUILD_VERSION);
             return;
         }
-        if (!Titanium_ProcessIsSystemOrControl()) {
-            // Other UIKit apps: read-only display-rate hooks only. No driver symbols,
-            // no IOMobileFramebuffer access, no monitors, no observers.
-            PM_SAFE_TRY({
-                PMLoadPreferencesSync();
-                %init;
-            });
-            return;
+        BOOL fullRole = Titanium_ProcessIsSystemOrControl();
+        if (fullRole) {
+            PMInstallSafetyExceptionHandler();
+            PMResolvePrivateFrameworkSymbols();
         }
-        PMInstallSafetyExceptionHandler();
-        PMResolvePrivateFrameworkSymbols();
 
         PM_SAFE_TRY({
             PMLoadPreferencesSync();
             %init;
+            // Other UIKit apps: read-only display-rate hooks only. No driver symbols,
+            // no IOMobileFramebuffer access, no monitors, no observers.
+            if (!fullRole) return;
 
             g_PMPreferenceQueue = dispatch_queue_create("com.dell.promotioncontrol.preference-reload", DISPATCH_QUEUE_SERIAL);
             CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
