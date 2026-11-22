@@ -1991,10 +1991,15 @@ static void PMRearmReassertMonitor(void) {
     PMStopReassertMonitor();
     if (PMIsTweakActive()) PMStartReassertMonitor();
 }
+static dispatch_queue_t g_PMDriverQueue = NULL;
 static void PMStartDriverMonitor(void) {
     if (g_PMDriverMonitor) return;
-    g_PMDriverMonitor = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                                               dispatch_get_main_queue());
+    // Driver writes (IOMobileFramebuffer) can block. Keep them off the main queue so a slow
+    // display call cannot stall SpringBoard's main thread and trip the watchdog.
+    if (!g_PMDriverQueue) {
+        g_PMDriverQueue = dispatch_queue_create("com.dell.promotioncontrol.driver", DISPATCH_QUEUE_SERIAL);
+    }
+    g_PMDriverMonitor = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, g_PMDriverQueue);
     uint64_t interval = 500ull * NSEC_PER_MSEC;
     dispatch_source_set_timer(g_PMDriverMonitor,
                               dispatch_time(DISPATCH_TIME_NOW, interval),
