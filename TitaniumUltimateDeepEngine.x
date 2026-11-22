@@ -80,9 +80,8 @@ static inline BOOL Titanium_DeepShouldOverride(void) {
 - (double)refreshRateForMode     { return [self pm_effectiveRate]; }
 - (double)safeRefreshRate        { return [self pm_effectiveRate]; }
 - (double)nominalRefreshRate     { return [self pm_effectiveRate]; }
-// Forced timing values (kept from the original override).
-- (unsigned int)pixelClock      { return 0xFFFFFFFF; }
-- (uint32_t)timingFlags         { return 0xFFFFFFFF; }
+// pixelClock / timingFlags are forwarded to the real mode. Forcing 0xFFFFFFFF there is passed
+// to the display driver by FrontBoard and resets SpringBoard on mode changes.
 
 - (NSMethodSignature *)methodSignatureForSelector:(SEL)sel {
     return [_realMode methodSignatureForSelector:sel];
@@ -379,8 +378,10 @@ id Titanium_UnwrapDisplayMode(id mode) {
 // =================================================================================================
 // CONSTRUCTOR — Khởi tạo toàn bộ hệ thống Deep Hook
 // =================================================================================================
+extern BOOL Titanium_ProcessIsSystemOrControl(void);
 %ctor {
     @autoreleasepool {
+        if (!Titanium_ProcessIsSystemOrControl()) return; // other UIKit apps: no heavy hooks
         %init(TitaniumUltimateDeepGroup);
     }
 }
