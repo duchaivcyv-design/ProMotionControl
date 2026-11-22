@@ -1404,7 +1404,21 @@ NSTimeInterval Titanium_UnlockReassertInterval(void) {
 NSInteger Titanium_UnlockLevel(void) {
     return PMUnlockLevel();
 }
-static CAFrameRateRange Titanium_MakeSafeFrameRange(CAFrameRateRange original, TitaniumHardwareTarget target) {
+// Every frame-rate range handed to CoreAnimation goes through this. Invalid ranges such as
+// (0,0,0) or min > max make the render server loop, which is what hung SpringBoard.
+static CAFrameRateRange PMSanitizeFrameRange(CAFrameRateRange r) {
+    CGFloat hi = (isfinite(r.maximum) && r.maximum > 0.0) ? r.maximum : 60.0;
+    if (hi > 240.0) hi = 240.0;
+    CGFloat lo = (isfinite(r.minimum) && r.minimum > 0.0) ? r.minimum : 10.0;
+    if (lo > hi) lo = hi;
+    if (lo < 1.0) lo = 1.0;
+    CGFloat pf = isfinite(r.preferred) ? r.preferred : hi;
+    if (pf < lo) pf = lo;
+    if (pf > hi) pf = hi;
+    return CAFrameRateRangeMake(lo, hi, pf);
+}
+
+static CAFrameRateRange Titanium_MakeSafeFrameRangeRaw(CAFrameRateRange original, TitaniumHardwareTarget target) {
     CGFloat maximum = (CGFloat)MAX(10, target.effectiveHz);
     CGFloat preferred = (CGFloat)MIN(MAX(10, target.effectiveFPS), target.effectiveHz);
     if (PMExactRateEnforcementEnabled()) {
@@ -1421,11 +1435,14 @@ static CAFrameRateRange Titanium_MakeSafeFrameRange(CAFrameRateRange original, T
     original.preferred = MIN(MAX(preferred, minimum), original.maximum);
     return original;
 }
+static CAFrameRateRange Titanium_MakeSafeFrameRange(CAFrameRateRange original, TitaniumHardwareTarget target) {
+    return PMSanitizeFrameRange(Titanium_MakeSafeFrameRangeRaw(original, target));
+}
 
 // ============================================================================
 // 8.0 CORE: PMRateRangeForActiveServer — always [10, 240, target] under lock.
 // ============================================================================
-static CAFrameRateRange PMRateRangeForActiveServer(CAFrameRateRange original, NSInteger requestedFPS) {
+static CAFrameRateRange PMRateRangeForActiveServerRaw(CAFrameRateRange original, NSInteger requestedFPS) {
     (void)original;
     NSInteger mode = __atomic_load_n(&g_ActiveServerMode, __ATOMIC_ACQUIRE);
 
@@ -1469,6 +1486,9 @@ static CAFrameRateRange PMRateRangeForActiveServer(CAFrameRateRange original, NS
     original.maximum = MAX(maximum, preferred);
     original.preferred = preferred;
     return original;
+}
+static CAFrameRateRange PMRateRangeForActiveServer(CAFrameRateRange original, NSInteger requestedFPS) {
+    return PMSanitizeFrameRange(PMRateRangeForActiveServerRaw(original, requestedFPS));
 }
 
 static inline BOOL PMAnimationRateHintsEnabled(void) {
