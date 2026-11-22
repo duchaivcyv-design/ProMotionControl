@@ -1481,6 +1481,17 @@ static inline BOOL PMFrameRatesAreClose(CAFrameRateRange a, CAFrameRateRange b) 
            fabs(a.preferred - b.preferred) < 0.01;
 }
 
+// One serial queue for every IOMobileFramebuffer write. Created once, never on the main thread
+// callers that matter: blocking display-driver calls must not stall SpringBoard's main thread.
+static dispatch_queue_t PMDriverQueueGet(void) {
+    static dispatch_queue_t queue = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("com.dell.promotioncontrol.driver", DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
+
 static void PMRefreshTrackedDisplayLinks(void) {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ PMRefreshTrackedDisplayLinks(); });
@@ -1489,7 +1500,8 @@ static void PMRefreshTrackedDisplayLinks(void) {
 
     BOOL active = PMIsTweakActive();
     if (active && (PMDriverOverrideEnabled() || PMPanelOverrideEnabled())) {
-        PMAttemptDriverOverride(PMGetTargetHz());
+        NSInteger hz = PMGetTargetHz();
+        dispatch_async(PMDriverQueueGet(), ^{ PMAttemptDriverOverride(hz); });
     }
     NSArray<CADisplayLink *> *links = nil;
     @synchronized ([CADisplayLink class]) {
@@ -1991,15 +2003,11 @@ static void PMRearmReassertMonitor(void) {
     PMStopReassertMonitor();
     if (PMIsTweakActive()) PMStartReassertMonitor();
 }
-static dispatch_queue_t g_PMDriverQueue = NULL;
 static void PMStartDriverMonitor(void) {
     if (g_PMDriverMonitor) return;
     // Driver writes (IOMobileFramebuffer) can block. Keep them off the main queue so a slow
     // display call cannot stall SpringBoard's main thread and trip the watchdog.
-    if (!g_PMDriverQueue) {
-        g_PMDriverQueue = dispatch_queue_create("com.dell.promotioncontrol.driver", DISPATCH_QUEUE_SERIAL);
-    }
-    g_PMDriverMonitor = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, g_PMDriverQueue);
+    g_PMDriverMonitor = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, PMDriverQueueGet());
     uint64_t interval = 500ull * NSEC_PER_MSEC;
     dispatch_source_set_timer(g_PMDriverMonitor,
                               dispatch_time(DISPATCH_TIME_NOW, interval),
