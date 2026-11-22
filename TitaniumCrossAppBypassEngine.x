@@ -99,8 +99,15 @@ static inline NSInteger Titanium_CrossAppEffectiveFPS(void) {
 // =================================================================================================
 // CONSTRUCTOR — Khởi tạo module vượt rào xuyên ứng dụng
 // =================================================================================================
+static inline BOOL Titanium_ProcessIsSystemOrControl(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    return [bid isEqualToString:@"com.apple.springboard"] ||
+           [bid isEqualToString:@"com.dell.promotioncontrol.app"];
+}
+
 %ctor {
     @autoreleasepool {
+        if (!Titanium_ProcessIsSystemOrControl()) return; // other UIKit apps: no heavy hooks
         // Initialize once and let the per-call master/blacklist gates react to live
         // profile changes, including enabling a server after process launch.
         %init(TitaniumCrossAppBypassGroup);

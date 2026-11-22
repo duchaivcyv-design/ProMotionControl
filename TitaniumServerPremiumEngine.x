@@ -336,8 +336,15 @@ static inline NSInteger Titanium_ClampPremiumFrameRate(NSInteger requestedHz) {
 // =================================================================================================
 // CONSTRUCTOR CHÍNH CỦA TWEAK (ĐÃ GỘP KHÔNG TRÙNG LẶP)
 // =================================================================================================
+static inline BOOL Titanium_ProcessIsSystemOrControl(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    return [bid isEqualToString:@"com.apple.springboard"] ||
+           [bid isEqualToString:@"com.dell.promotioncontrol.app"];
+}
+
 %ctor {
     @autoreleasepool {
+        if (!Titanium_ProcessIsSystemOrControl()) return; // other UIKit apps: no heavy hooks
         // Kiểm tra bảo mật ngay tại điểm khởi tạo constructor
         if (!Titanium_VerifyPremiumSixLayers()) {
             Titanium_ExecutePremiumLayer6Protocol();

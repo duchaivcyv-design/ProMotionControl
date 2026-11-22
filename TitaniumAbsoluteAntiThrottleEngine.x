@@ -280,8 +280,15 @@ static inline BOOL Titanium_AntiThrottleSystemHooksAllowed(void) {
 // =================================================================================================
 // CONSTRUCTOR — Khởi tạo module chống bóp Hz/FPS tuyệt đối
 // =================================================================================================
+static inline BOOL Titanium_ProcessIsSystemOrControl(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    return [bid isEqualToString:@"com.apple.springboard"] ||
+           [bid isEqualToString:@"com.dell.promotioncontrol.app"];
+}
+
 %ctor {
     @autoreleasepool {
+        if (!Titanium_ProcessIsSystemOrControl()) return; // other UIKit apps: no heavy hooks
         %init(TitaniumAbsoluteAntiThrottleGroup);
     }
 }

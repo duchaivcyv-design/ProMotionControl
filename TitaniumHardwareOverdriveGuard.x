@@ -185,8 +185,15 @@ static inline BOOL Titanium_Overdrive_KeyIsThrottleRelated(NSString *key) {
 // =================================================================================================
 // CONSTRUCTOR — Khởi tạo module chống giảm tải phần cứng tối thượng
 // =================================================================================================
+static inline BOOL Titanium_ProcessIsSystemOrControl(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    return [bid isEqualToString:@"com.apple.springboard"] ||
+           [bid isEqualToString:@"com.dell.promotioncontrol.app"];
+}
+
 %ctor {
     @autoreleasepool {
+        if (!Titanium_ProcessIsSystemOrControl()) return; // other UIKit apps: no heavy hooks
         %init(TitaniumHardwareOverdriveGroup);
     }
 }

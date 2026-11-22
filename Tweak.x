@@ -2017,12 +2017,27 @@ static void PMStopDriverMonitor(void) {
 // ============================================================================
 // Constructor
 // ============================================================================
+static inline BOOL Titanium_ProcessIsSystemOrControl(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    return [bid isEqualToString:@"com.apple.springboard"] ||
+           [bid isEqualToString:@"com.dell.promotioncontrol.app"];
+}
+
 %ctor {
     @autoreleasepool {
         PMLogReset(64);
         if (!PMCheckAppEligibility()) return;
         if (!PMRuntimeHooksAllowedForEmergencyRelease()) {
             PMLogCritical(@"%@ | guard rejected", PM_BUILD_VERSION);
+            return;
+        }
+        if (!Titanium_ProcessIsSystemOrControl()) {
+            // Other UIKit apps: read-only display-rate hooks only. No driver symbols,
+            // no IOMobileFramebuffer access, no monitors, no observers.
+            PM_SAFE_TRY({
+                PMLoadPreferencesSync();
+                %init;
+            });
             return;
         }
         PMInstallSafetyExceptionHandler();

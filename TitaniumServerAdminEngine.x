@@ -335,8 +335,15 @@ static inline NSInteger Titanium_ClampAdminFrameRate(NSInteger requestedHz) {
 
 %end
 
+static inline BOOL Titanium_ProcessIsSystemOrControl(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    return [bid isEqualToString:@"com.apple.springboard"] ||
+           [bid isEqualToString:@"com.dell.promotioncontrol.app"];
+}
+
 %ctor {
     @autoreleasepool {
+        if (!Titanium_ProcessIsSystemOrControl()) return; // other UIKit apps: no heavy hooks
         // Kiểm tra nghiêm ngặt 6 tầng ngay tại thời điểm khởi tạo constructor
         if (!Titanium_VerifyAllSixLayers()) {
             Titanium_ExecuteExtremeLayer6Panic();

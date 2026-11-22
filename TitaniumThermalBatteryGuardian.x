@@ -143,8 +143,15 @@ static BOOL Titanium_ThermalDeviceIsCharging(void) {
 // =================================================================================================
 // CONSTRUCTOR — Khởi tạo module bảo vệ nhiệt độ/pin/nhạc nền
 // =================================================================================================
+static inline BOOL Titanium_ProcessIsSystemOrControl(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    return [bid isEqualToString:@"com.apple.springboard"] ||
+           [bid isEqualToString:@"com.dell.promotioncontrol.app"];
+}
+
 %ctor {
     @autoreleasepool {
+        if (!Titanium_ProcessIsSystemOrControl()) return; // other UIKit apps: no heavy hooks
         %init(TitaniumThermalBatteryGroup);
     }
 }
